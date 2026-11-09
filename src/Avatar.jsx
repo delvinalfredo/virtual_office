@@ -245,7 +245,12 @@ export function Player({ onPos = null, teleportRef = null }) {
 
     walking.current = len > 0.001
     if (len > 0.001) {
-      group.current.rotation.y = Math.atan2(mx, mz)
+      // putar halus ke arah gerak (lerp sudut dari jalur terpendek)
+      let targetRot = Math.atan2(mx, mz)
+      let d = targetRot - group.current.rotation.y
+      if (d > Math.PI) d -= Math.PI * 2
+      if (d < -Math.PI) d += Math.PI * 2
+      group.current.rotation.y += d * Math.min(1, dt * 12)
     }
     const y = level.current === 1 ? 3.18 : 0
     group.current.position.set(pos.current.x, y, pos.current.z)

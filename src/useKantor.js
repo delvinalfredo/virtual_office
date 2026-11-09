@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react'
+import { useEffect, useState, useRef, useCallback } from 'react'
 import { sfx } from './sfx'
 
 // koneksi ke server kantor: snapshot awal + update agents/tasks/peers
@@ -45,25 +45,27 @@ export function useKantor() {
     return () => ws.close()
   }, [])
 
-  const addTask = (title, est) =>
+  // callback stabil: identitas tak boleh berubah tiap render (WS re-render 8x/s),
+  // kalau tidak interval posisi pemain di Player (deps onPos) terus di-teardown → posisi tak pernah ke-broadcast.
+  const addTask = useCallback((title, est) =>
     fetch('/api/tasks', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ title, est }),
-    })
+    }), [])
 
-  const sendPos = (name, x, z) => {
+  const sendPos = useCallback((name, x, z) => {
     if (wsRef.current?.readyState === 1) {
       wsRef.current.send(JSON.stringify({ type: 'player-pos', name, x, z }))
     }
-  }
+  }, [])
 
-  const sendChat = (text, agent = null) => {
+  const sendChat = useCallback((text, agent = null) => {
     if (wsRef.current?.readyState === 1) {
       wsRef.current.send(JSON.stringify(agent ? { type: 'dm-agent', agent, text } : { type: 'chat', text }))
       sfx.pop()
     }
-  }
+  }, [])
 
   return { agents, agentsStatic, tasks, peers, chat, addTask, sendPos, sendChat }
 }

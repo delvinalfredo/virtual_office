@@ -58,7 +58,18 @@ wss.on('connection', (ws) => {
     let m
     try { m = JSON.parse(data) } catch { return }
     if (m.type === 'player-pos') {
-      const p = peers.get(ws) ?? { name: m.name ?? `tamu${peers.size + 1}` }
+      // validasi posisi: tolak NaN / tipe aneh biar ga relay sampah ke client lain
+      if (!Number.isFinite(m.x) || !Number.isFinite(m.z)) return
+      let name = typeof m.name === 'string' ? m.name.slice(0, 24).trim() : ''
+      if (!name) name = `tamu${peers.size + 1}`
+      // nama harus unik antar peer; tambahkan suffix kalau sudah dipakai orang lain
+      const taken = (n) => [...peers.values()].some((p) => p.name === n)
+      if (taken(name)) {
+        let n = 2
+        while (taken(`${name}-${n}`)) n++
+        name = `${name}-${n}`
+      }
+      const p = peers.get(ws) ?? { name }
       p.x = +(+m.x).toFixed(2)
       p.z = +(+m.z).toFixed(2)
       peers.set(ws, p)
@@ -200,7 +211,6 @@ const TICK = 50
 setInterval(() => {
   const dt = TICK / 1000
   let posChanged = false
-  let workDone = false
 
   for (const a of agents.values()) {
     // bergerak ke target dgn collision sederhana
@@ -247,18 +257,24 @@ setInterval(() => {
       const prog = Math.min(t.progress + inc, t.est)
       updateTask(t.id, { progress: prog })
       if (prog >= t.est) {
-        // task siap → masuk review (pegang sampai lead "review")
-        updateTask(t.id, {
-          status: 'review',
-          progress: t.est,
-        })
+        // lead selesai review → task done. worker non-lead → masuk antrian review
+        const isReview = t.status === 'in_progress' && t.agent_id === 'lead'
+        const out = finishOutput(a.role, t.title)
+        updateTask(t.id, isReview
+          ? { status: 'done', progress: t.est, finished_at: new Date().toISOString(), output: out.text }
+          : { status: 'review', progress: t.est })
         a.task = null
         a.state = 'idle'
-        a.bubble = '📨 kirim review'
+        a.bubble = isReview ? '✅ approved' : '📨 kirim review'
         a.restT = 3
         broadcast({ type: 'task-update' })
-        // dispatch lead ke review
-        setImmediate(() => dispatchReview())
+        if (isReview) {
+          // lead selesai: cek antrian todo berikutnya
+          setImmediate(() => dispatch())
+        } else {
+          // dispatch lead ke review
+          setImmediate(() => dispatchReview())
+        }
       }
     }
 
@@ -299,7 +315,6 @@ setInterval(() => {
       agents: [...agents.values()].map((a) => ({ id: a.id, x: +a.x.toFixed(2), z: +a.z.toFixed(2), heading: +a.heading.toFixed(2), state: a.state, bubble: a.bubble })),
     })
   }
-  if (workDone) dispatch()
 }, TICK)
 
 // dispatch awal & berkala

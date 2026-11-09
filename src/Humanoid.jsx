@@ -36,31 +36,37 @@ export default function Humanoid({ id = 'kamu', walk = false, working = false, h
   const head = useRef()
   const phase = useRef(Math.random() * Math.PI * 2)
 
-  useFrame(({ clock }) => {
+  useFrame(({ clock }, dt) => {
     const t = clock.getElapsedTime() + phase.current
+    // blend halus antar pose (idle → walk → working): pose target dihitung,
+    // lalu rotasi aktual didekati dengan damping — tidak ada snap aneh.
+    const f = 1 - Math.pow(0.02, dt) // damping eksponensial, framerate-independen
+    const damped = (cur, tgt) => THREE.MathUtils.lerp(cur, tgt, f)
+    let armT = [0.08, -0.08] // default idle
+    let legAmp = 0
     if (walk) {
       const a = Math.sin(t * 11) * 0.6
-      if (lArm.current) lArm.current.rotation.x = a
-      if (rArm.current) rArm.current.rotation.x = -a
-      if (lLeg.current) lLeg.current.rotation.x = -a * 0.9
-      if (rLeg.current) rLeg.current.rotation.x = a * 0.9
-      if (head.current) head.current.position.y = 1.62 + Math.abs(Math.sin(t * 11)) * 0.02
+      armT = [a, -a]
+      legAmp = 0.9
     } else if (working) {
-      // mengetik: kedua tangan ke depan
       const a = Math.sin(t * 14) * 0.07
-      if (lArm.current) lArm.current.rotation.x = -0.9 + a
-      if (rArm.current) rArm.current.rotation.x = -0.9 - a
-      if (lLeg.current) lLeg.current.rotation.x = 0
-      if (rLeg.current) rLeg.current.rotation.x = 0
-      if (head.current) head.current.position.y = 1.62
+      armT = [-0.9 + a, -0.9 - a]
     } else {
       const a = Math.sin(t * 2) * 0.05
-      if (lArm.current) lArm.current.rotation.x = 0.08 + a
-      if (rArm.current) rArm.current.rotation.x = 0.08 - a
-      if (lLeg.current) lLeg.current.rotation.x = 0
-      if (rLeg.current) rLeg.current.rotation.x = 0
-      if (head.current) head.current.position.y = 1.62 + Math.sin(t * 1.6) * 0.012
+      armT = [0.08 + a, 0.08 - a]
     }
+    if (lArm.current) lArm.current.rotation.x = damped(lArm.current.rotation.x, armT[0])
+    if (rArm.current) rArm.current.rotation.x = damped(rArm.current.rotation.x, armT[1])
+    const legT = [
+      -(walk ? Math.sin(t * 11) * 0.6 : 0) * legAmp,
+      (walk ? Math.sin(t * 11) * 0.6 : 0) * legAmp,
+    ]
+    if (lLeg.current) lLeg.current.rotation.x = damped(lLeg.current.rotation.x, legT[0])
+    if (rLeg.current) rLeg.current.rotation.x = damped(rLeg.current.rotation.x, legT[1])
+    const headT = walk
+      ? 1.62 + Math.abs(Math.sin(t * 11)) * 0.02
+      : working ? 1.62 : 1.62 + Math.sin(t * 1.6) * 0.012
+    if (head.current) head.current.position.y = damped(head.current.position.y, headT)
   })
 
   const skinMat = <meshToonMaterial color={p.skin} gradientMap={gradient} />
