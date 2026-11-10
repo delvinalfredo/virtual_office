@@ -63,16 +63,33 @@ export function Board({ tasks, onDelete, control }) {
   const [revise, setRevise] = useState(null) // { id, text }
   const [cardError, setCardError] = useState(null) // { id, text }
   const [busy, setBusy] = useState(false)
+  const [diffs, setDiffs] = useState({}) // perubahan per id task yang dibuka: { error } atau { files, patch }; dikosongkan saat dialog ditutup
   const closeRef = useRef(null)
+  const { on: owner, call: ownerCall } = control
 
   // dialog hasil task: fokus ke tombol tutup, Escape menutup
   useEffect(() => {
     if (!open) return
     closeRef.current?.focus()
-    const onKey = (e) => { if (e.key === 'Escape') setOpen(null) }
+    const onKey = (e) => { if (e.key === 'Escape') { setOpen(null); setDiffs({}) } }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [open])
+
+  const closeDialog = () => { setOpen(null); setDiffs({}) }
+
+  // perubahan (diff) task bercabang dimuat saat dialognya dibuka; sebelum jawaban datang tampil "memuat"
+  const wantsDiff = Boolean(open && owner && open.mode === 'claude' && open.branch)
+  const diff = wantsDiff ? (diffs[open.id] ?? 'loading') : null
+  const openId = open?.id
+  useEffect(() => {
+    if (!wantsDiff) return undefined
+    let stale = false
+    ownerCall('GET', `/api/tasks/${openId}/diff`)
+      .then(async (r) => { const j = await r.json().catch(() => ({})); if (!stale) setDiffs((d) => ({ ...d, [openId]: r.ok ? j : { error: j.error ?? 'Perubahan tidak bisa dimuat' } })) })
+      .catch(() => { if (!stale) setDiffs((d) => ({ ...d, [openId]: { error: 'Server tidak terjangkau' } })) })
+    return () => { stale = true }
+  }, [wantsDiff, openId, ownerCall])
 
   // jumlah task Claude yang menunggu keputusanmu tampil di judul tab; bunyi saat bertambah (bukan saat halaman dibuka)
   const pending = control.on ? tasks.filter((t) => t.mode === 'claude' && t.status === 'review').length : 0
@@ -162,6 +179,7 @@ export function Board({ tasks, onDelete, control }) {
                         </div>
                       )}
                       {claude && t.status === 'review' && t.output && <div className="tnote">{t.output}</div>}
+                      {mine && t.branch && t.status === 'review' && <div className="tnote">Cabang {t.branch}</div>}
                       {mine && t.status === 'review' && (
                         <div className="tact">
                           <button className="btn sm go" disabled={busy} onClick={() => decide(t.id, 'approve')}>Setujui</button>
@@ -171,7 +189,12 @@ export function Board({ tasks, onDelete, control }) {
                             </button>
                           )}
                           <button className="btn sm" disabled={busy} onClick={() => decide(t.id, 'retry')}>Ulangi</button>
-                          {t.detail && <button className="btn sm" aria-label={`Lihat hasil: ${t.title}`} onClick={() => setOpen(t)}>Hasil</button>}
+                          {(t.detail || t.branch) && <button className="btn sm" aria-label={`Lihat detail: ${t.title}`} onClick={() => setOpen(t)}>Detail</button>}
+                          {t.branch && (
+                            <button className="btn sm go full" disabled={busy} title="Gabungkan cabang task ke cabang aktif proyek" onClick={() => decide(t.id, 'merge')}>
+                              Gabungkan
+                            </button>
+                          )}
                         </div>
                       )}
                       {mine && revise?.id === t.id && (
@@ -209,7 +232,7 @@ export function Board({ tasks, onDelete, control }) {
       </div>
 
       {open && (
-        <div className="backdrop" onClick={() => setOpen(null)}>
+        <div className="backdrop" onClick={closeDialog}>
           <div className="dialog panel" role="dialog" aria-modal="true" aria-label={open.title} onClick={(e) => e.stopPropagation()}>
             <h2>{open.title}</h2>
             <div className="meta">
@@ -218,7 +241,28 @@ export function Board({ tasks, onDelete, control }) {
                 : open.status === 'review' ? 'menunggu keputusan' : 'belum tercatat'}
             </div>
             <pre>{(open.mode === 'claude' && open.detail) || open.output || '(tidak ada output)'}</pre>
-            <button ref={closeRef} className="btn go" onClick={() => setOpen(null)}>Tutup</button>
+            {diff && (
+              <section aria-label="Perubahan">
+                <h3>Perubahan{diff.branch ? ` di ${diff.branch}` : ''}</h3>
+                {diff === 'loading' && <p className="empty">Memuat perubahan.</p>}
+                {diff.error && <p role="alert" className="note bad">{diff.error}</p>}
+                {diff.files?.length === 0 && <p className="empty">Tidak ada berkas yang berubah.</p>}
+                {diff.files?.length > 0 && (
+                  <>
+                    <ul className="dfiles">
+                      {diff.files.map((x) => <li key={x.path}>{x.path} <small>{x.added == null ? 'biner' : `+${x.added} -${x.removed}`}</small></li>)}
+                    </ul>
+                    <pre className="patch" tabIndex={0} aria-label="Isi perubahan">
+                      {diff.patch.split('\n').map((l, i) => (
+                        <span key={i} className={l.startsWith('+') && !l.startsWith('+++') ? 'add' : l.startsWith('-') && !l.startsWith('---') ? 'del' : undefined}>{l}{'\n'}</span>
+                      ))}
+                    </pre>
+                    {diff.truncated && <p className="note">Patch dipotong karena terlalu besar. Lihat selengkapnya dengan git diff di proyek.</p>}
+                  </>
+                )}
+              </section>
+            )}
+            <button ref={closeRef} className="btn go" onClick={closeDialog}>Tutup</button>
           </div>
         </div>
       )}

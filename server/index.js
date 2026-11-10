@@ -1,15 +1,17 @@
 import express from 'express'
 import { WebSocketServer } from 'ws'
 import http from 'node:http'
+import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import db, { getAgents, getTasks, getTasksByStatus, recoverStuckTasks, insertTask, updateTask, getTask, getRunningTaskBySession, insertClaudeTask, publicTask, logSession, getHistory, costSummary } from './db.js'
+import db, { getAgents, getTasks, getTasksByStatus, recoverStuckTasks, RESTART_NOTE, insertTask, updateTask, getTask, getRunningTaskBySession, insertClaudeTask, publicTask, logSession, getHistory, costSummary } from './db.js'
 import { clampToRoom, resolveObstacles, WALL } from '../src/office-plan.js'
 import { parseHook } from './live.js'
 import crypto from 'node:crypto'
 import { checkControl } from './control.js'
 import { loadProjects, addProject, removeProject, setProjectChecks } from './projects.js'
 import { loadKitAgents, writeAgentsFile, orchestrationPrompt } from './kit.js'
+import { prepare as prepareWork, snapshot as saveWork, diffOf, mergeBranch, discard } from './gitwork.js'
 import { createSessions, MAX_PROMPT } from './sessions.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -509,6 +511,10 @@ setInterval(() => {
 // dispatch awal & berkala
 const recovered = recoverStuckTasks()
 if (recovered.todo || recovered.review) console.log(`task nyangkut dipulihkan: ${recovered.todo} ke todo, ${recovered.review} ke review`)
+for (const t of getTasksByStatus('review')) {
+  // pekerjaan yang terputus saat server mati disimpan sebagai commit supaya tidak hilang
+  if (t.mode === 'claude' && t.worktree && t.output === RESTART_NOTE) saveWork({ worktree: t.worktree, title: t.title, taskId: t.id }).catch(() => {})
+}
 dispatch()
 dispatchReview()
 setInterval(() => { dispatch(); dispatchReview(); dispatchClaude() }, 1000)
@@ -528,13 +534,15 @@ app.post('/api/tasks', (req, res) => {
   res.status(201).json(t)
 })
 
-app.delete('/api/tasks/:id', (req, res) => {
+app.delete('/api/tasks/:id', async (req, res) => {
   const id = Number(req.params.id)
   const t = db.prepare('SELECT * FROM tasks WHERE id=?').get(id)
   if (!t) return res.status(404).json({ error: 'tidak ada' })
   if (t.mode === 'claude') {
     if (!isOwner(req)) return res.status(403).json({ error: 'hanya dari komputer ini' })
-    if (t.status === 'in_progress' && t.session_id) sessions.stop(t.session_id)
+    if (t.status === 'in_progress' && t.session_id) await stopAndWait(t.session_id)
+    const d = await dropWork(t)
+    if (d.error) return res.status(400).json(d)
   }
   // kalau sedang dikerjakan, bebaskan agent-nya
   for (const a of agents.values()) {
@@ -586,7 +594,7 @@ const sessions = createSessions({
     onStop: (s) => {
       liveStop(`live-${liveKey(s)}`, { done: DONE, stopped: 'Dihentikan', error: 'Gagal' }[s.state])
       logSessionEnd(s)
-      finishClaudeTask(s)
+      finishClaudeTask(s).catch(() => {})
     },
     // subagent yang dipanggil sesi tampil sebagai karakter tamu sendiri, dibaca dari stream sesi (tanpa hook terpasang)
     onSubagent: (s, ev) => {
@@ -660,16 +668,67 @@ const toReview = (t, note, detail = null, keepSession = false) => {
   broadcast({ type: 'task-update' })
 }
 
-// task Claude di antrian jalan satu per satu sampai batas sesi; sisanya menunggu
-function dispatchClaude() {
-  for (const t of getTasksByStatus('todo')) {
-    if (t.mode !== 'claude') continue
-    if (!projects.some((p) => p.id === t.project_id)) { toReview(t, 'Proyek sudah tidak ada di daftar.'); continue }
-    const r = sessions.start({ projectId: t.project_id, prompt: t.prompt || t.title, run: claudeRun(parseRoles(t.roles)) })
-    if (r.busy) break
-    if (r.error) { toReview(t, 'Gagal dimulai.', r.error); continue }
-    updateTask(t.id, { status: 'in_progress', session_id: r.id, output: null, detail: null })
-    broadcast({ type: 'task-update' })
+// Folder kerja per task (git worktree). Di dalam server/, yang sudah di-gitignore lewat pola workspace/.
+const WORK_ROOT = path.join(__dirname, 'workspace')
+const projectOf = (t) => projects.find((p) => p.id === t.project_id)
+const noBranch = { branch: null, worktree: null, base: null }
+// sisa folder kosong dari pembuangan sebelumnya (di Windows folder yang baru dihapus bisa tertahan sebentar);
+// rmdir hanya menghapus folder kosong, jadi folder kerja yang masih berisi tidak mungkin ikut terhapus
+try {
+  for (const name of fs.readdirSync(WORK_ROOT)) {
+    try { fs.rmdirSync(path.join(WORK_ROOT, name)) } catch { /* masih berisi atau dipakai: biarkan */ }
+  }
+} catch { /* belum ada folder kerja */ }
+
+// Membuang cabang kerja sebuah task. Proyek yang sudah tidak terdaftar tidak bisa dibersihkan dari sini.
+async function dropWork(t) {
+  if (!t.worktree && !t.branch) return { ok: true }
+  const project = projectOf(t)
+  if (!project) return { ok: true }
+  return discard({ projectDir: project.path, worktree: t.worktree, branch: t.branch })
+}
+
+// Menunggu sesi benar-benar berhenti sebelum folder kerjanya dibuang.
+async function stopAndWait(sessionId) {
+  sessions.stop(sessionId)
+  for (let i = 0; i < 50; i++) {
+    const s = sessions.get(sessionId)
+    if (!s || (s.state !== 'running' && s.state !== 'stopping')) return
+    await new Promise((r) => setTimeout(r, 100))
+  }
+}
+
+// task Claude di antrian jalan satu per satu sampai batas sesi; sisanya menunggu. Proyek git bekerja di
+// cabang sendiri (kantor/task-N), proyek biasa langsung di foldernya. Pemanggilan tumpang tindih diabaikan.
+let dispatching = false
+async function dispatchClaude() {
+  if (dispatching) return
+  dispatching = true
+  try {
+    for (const t of getTasksByStatus('todo')) {
+      if (t.mode !== 'claude') continue
+      const project = projectOf(t)
+      if (!project) { toReview(t, 'Proyek sudah tidak ada di daftar.'); continue }
+      if (!sessions.hasSlot()) break // penuh: jangan menyiapkan cabang untuk task yang belum bisa jalan
+      const run = claudeRun(parseRoles(t.roles))
+      const work = await prepareWork({ projectDir: project.path, taskId: t.id, projectId: project.id, root: WORK_ROOT })
+      if (work.error) { toReview(t, 'Gagal menyiapkan cabang kerja.', work.error); continue }
+      if (work.cwd) {
+        run.cwd = work.cwd
+        updateTask(t.id, { branch: work.branch, worktree: work.worktree, base: work.base })
+      }
+      const r = sessions.start({ projectId: project.id, prompt: t.prompt || t.title, run })
+      if (r.error) {
+        if (work.cwd) { await discard({ projectDir: project.path, worktree: work.worktree, branch: work.branch }); updateTask(t.id, noBranch) }
+        if (r.busy) break
+        toReview(t, 'Gagal dimulai.', r.error)
+        continue
+      }
+      updateTask(t.id, { status: 'in_progress', session_id: r.id, output: null, detail: null })
+      broadcast({ type: 'task-update' })
+    }
+  } finally {
+    dispatching = false
   }
 }
 
@@ -689,13 +748,19 @@ function logSessionEnd(s) {
   } catch { /* riwayat gagal tertulis tidak boleh menjatuhkan sesi */ }
 }
 
-// sesi selesai, gagal, atau dihentikan: task menunggu keputusan di kolom Review
-function finishClaudeTask(s) {
+// sesi selesai, gagal, atau dihentikan: hasil kerjanya disimpan sebagai commit di cabang task (termasuk yang
+// belum tuntas), lalu task menunggu keputusan di kolom Review
+async function finishClaudeTask(s) {
   const t = getRunningTaskBySession(s.id)
   if (!t) return
-  const note = { done: 'Selesai, menunggu persetujuan', stopped: 'Dihentikan', error: 'Gagal, perlu dicek' }[s.state] ?? 'Selesai'
-  const denied = s.result?.denials ? `, ${s.result.denials} izin ditolak` : ''
-  toReview(t, note + denied, s.state === 'error' ? (s.error ?? null) : (s.result?.text || s.lastText || null), true)
+  let note = { done: 'Selesai, menunggu persetujuan', stopped: 'Dihentikan', error: 'Gagal, perlu dicek' }[s.state] ?? 'Selesai'
+  if (s.result?.denials) note += `, ${s.result.denials} izin ditolak`
+  let detail = s.state === 'error' ? (s.error ?? null) : (s.result?.text || s.lastText || null)
+  if (t.worktree) {
+    const snap = await saveWork({ worktree: t.worktree, title: t.title, taskId: t.id })
+    if (snap.error) { note += ', perubahan gagal disimpan'; detail = `${snap.error}\n\n${detail ?? ''}`.trim() }
+  }
+  toReview(t, note, detail, true)
 }
 
 const claudeTask = (req, res, need) => {
@@ -730,17 +795,53 @@ app.post('/api/tasks/claude', control(true), (req, res) => {
 app.post('/api/tasks/:id/approve', control(true), (req, res) => {
   const t = claudeTask(req, res, 'review')
   if (!t) return
-  updateTask(t.id, { status: 'done', finished_at: new Date().toISOString() })
+  // disetujui tanpa digabung: cabang kerja tetap ada supaya bisa digabung sendiri nanti
+  updateTask(t.id, { status: 'done', finished_at: new Date().toISOString(), ...(t.branch && { output: `Disetujui. Perubahan ada di cabang ${t.branch}, belum digabung.` }) })
   broadcast({ type: 'task-update' })
   res.json({ ok: true })
 })
-app.post('/api/tasks/:id/retry', control(true), (req, res) => {
+app.post('/api/tasks/:id/retry', control(true), async (req, res) => {
   const t = claudeTask(req, res, 'review')
   if (!t) return
-  updateTask(t.id, { status: 'todo', session_id: null, output: null, detail: null })
+  const d = await dropWork(t)
+  if (d.error) return res.status(400).json(d)
+  updateTask(t.id, { status: 'todo', session_id: null, output: null, detail: null, ...noBranch })
   broadcast({ type: 'task-update' })
   dispatchClaude()
   res.json({ ok: true })
+})
+// Gabungkan: cabang task masuk ke cabang aktif proyek, lalu cabang dan folder kerjanya dibuang
+const merging = new Set()
+app.post('/api/tasks/:id/merge', control(true), async (req, res) => {
+  const t = claudeTask(req, res, 'review')
+  if (!t) return
+  if (!t.branch) return res.status(400).json({ error: 'task ini tidak memakai cabang kerja' })
+  const project = projectOf(t)
+  if (!project) return res.status(400).json({ error: 'proyek sudah tidak ada di daftar' })
+  if (merging.has(t.id)) return res.status(400).json({ error: 'penggabungan sedang berjalan' })
+  merging.add(t.id)
+  try {
+    const m = await mergeBranch({ projectDir: project.path, branch: t.branch, title: t.title })
+    if (m.error) return res.status(400).json(m)
+    const d = await discard({ projectDir: project.path, worktree: t.worktree, branch: t.branch })
+    updateTask(t.id, {
+      status: 'done', finished_at: new Date().toISOString(), session_id: null,
+      output: d.error ? `Digabung ke cabang ${m.into}, tetapi folder kerja belum terhapus: ${d.error}` : `Digabung ke cabang ${m.into}.`,
+      ...(d.error ? {} : noBranch),
+    })
+    broadcast({ type: 'task-update' })
+    res.json({ ok: true, into: m.into })
+  } finally {
+    merging.delete(t.id)
+  }
+})
+// Perubahan yang dibuat sebuah task: daftar berkas dan patch terhadap titik awalnya
+app.get('/api/tasks/:id/diff', control(true), async (req, res) => {
+  const t = getTask(Number(req.params.id))
+  if (!t || t.mode !== 'claude' || !t.worktree) return res.status(404).json({ error: 'task ini tidak punya cabang kerja' })
+  const d = await diffOf({ worktree: t.worktree, base: t.base })
+  if (d.error) return res.status(400).json(d)
+  res.json({ branch: t.branch, ...d })
 })
 app.post('/api/tasks/:id/revise', control(true), (req, res) => {
   const t = claudeTask(req, res, 'review')

@@ -144,6 +144,7 @@ button { cursor: pointer; }
 .board.wide { max-width: 760px; }
 .tcard.claude { align-items: flex-start; }
 .tcard.claude .title { white-space: normal; overflow-wrap: anywhere; }
+.tact .full { grid-column: 1 / -1; }
 .tact .btn.sm { min-height: 28px; min-width: 0; padding: 2px 2px; font-size: 11px; border-width: 2px; }
 .tcard .body { flex: 1; min-width: 0; }
 .tcard .title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -200,6 +201,13 @@ button { cursor: pointer; }
 .dialog { width: min(420px, 100%); max-height: 80vh; overflow: auto; padding: var(--s4); }
 .dialog h2 { margin: 0 0 4px; font-size: 18px; font-weight: 900; }
 .dialog .meta { font-size: 12px; color: var(--muted); margin-bottom: var(--s3); font-weight: 700; }
+.dialog:has(.patch) { width: min(720px, 100%); }
+.dialog h3 { margin: var(--s3) 0 var(--s1); font-size: 13px; font-weight: 900; }
+.dfiles { list-style: none; margin: 0 0 var(--s2); padding: 0; display: grid; gap: 2px; font-size: 12px; font-weight: 700; overflow-wrap: anywhere; }
+.dfiles small { color: var(--muted); }
+.dialog .patch { max-height: 36vh; overflow: auto; white-space: pre; font-size: 11px; }
+.patch .add { background: var(--col-done); }
+.patch .del { color: var(--danger); }
 .dialog pre { background: var(--col-todo); border: 2px solid var(--ink); border-radius: 8px; padding: var(--s3); font: 12px/1.45 ui-monospace, Consolas, monospace; white-space: pre-wrap; margin: 0 0 var(--s3); }
 .tlive { font-size: 11px; font-weight: 700; color: var(--muted); margin-top: var(--s1); overflow-wrap: anywhere; }
 .tnote { font-size: 11px; font-weight: 700; margin-top: var(--s1); overflow-wrap: anywhere; }

@@ -1,6 +1,7 @@
 // Pengganti `claude` untuk uji: meniru bentuk keluaran stream-json tanpa memakai akun atau jatah apa pun.
 // Dipanggil seperti claude: node fake-claude.mjs -p "<tugas>" --output-format stream-json ...
 // Kata kunci dalam tugas mengatur perilaku: "error" (gagal), "lama" (menggantung), "tolak" (ada izin ditolak).
+import fs from 'node:fs'
 const argv = process.argv.slice(2)
 const prompt = argv[1] ?? ''
 const out = (o) => process.stdout.write(JSON.stringify(o) + '\n')
@@ -11,6 +12,9 @@ if (prompt.includes('error')) {
   process.stderr.write('boom: contoh galat\n')
   process.exit(1)
 }
+// kata "tulis": mengubah berkas di folder kerja, seperti Claude yang mengedit proyek
+if (prompt.includes('tulis')) fs.writeFileSync(`hasil-${prompt.replace(/\W+/g, '-').slice(0, 30)}.txt`, `${prompt}
+`)
 if (prompt.includes('lama')) await new Promise((r) => setTimeout(r, 60000))
 
 if (prompt.includes('subagen')) {

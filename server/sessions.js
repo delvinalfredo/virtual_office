@@ -125,7 +125,7 @@ export function createSessions({ projects, bin = 'claude', maxRunning = 3, timeo
     Object.assign(s, { state: 'running', activity: 'Memulai', endedAt: null, stderr: '', result: null, error: null, stopRequested: false, timedOut: false })
     let child
     try {
-      child = spawn(cmd, argv, { cwd: project.path, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
+      child = spawn(cmd, argv, { cwd: run?.cwd ?? project.path, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
     } catch {
       return finish(s, null, 'tidak bisa menjalankan claude')
     }
@@ -203,6 +203,10 @@ export function createSessions({ projects, bin = 'claude', maxRunning = 3, timeo
         subagents: [...s.subagents.values()].map(({ type, state }) => ({ type, state })),
       }))
     },
+    // masih ada tempat untuk sesi baru? (dispatcher memeriksa ini sebelum menyiapkan cabang kerja)
+    hasSlot() { return running().length < maxRunning },
+    // masih ada tempat untuk sesi baru? (dispatcher memeriksa ini sebelum menyiapkan cabang kerja)
+    hasSlot() { return running().length < maxRunning },
     // id sesi Claude milik sesi dashboard: event hook dari sesi itu diabaikan karena subagent-nya sudah terbaca dari stream
     ownsClaudeId(id) {
       return typeof id === 'string' && [...byId.values()].some((s) => s.claudeId === id)

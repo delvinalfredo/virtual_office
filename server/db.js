@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS tasks (
 // Kolom untuk task yang dikerjakan Claude Code. Database lama ditambah kolomnya saat server mulai.
 //   mode: 'sim' (agent simulasi) atau 'claude'; prompt, detail, session_id, project_id hanya dilihat pemilik komputer
 const have = new Set(db.prepare('PRAGMA table_info(tasks)').all().map((c) => c.name))
-for (const [name, def] of [['mode', "TEXT NOT NULL DEFAULT 'sim'"], ['project_id', 'TEXT'], ['session_id', 'TEXT'], ['prompt', 'TEXT'], ['detail', 'TEXT'], ['roles', 'TEXT']]) {
+for (const [name, def] of [['mode', "TEXT NOT NULL DEFAULT 'sim'"], ['project_id', 'TEXT'], ['session_id', 'TEXT'], ['prompt', 'TEXT'], ['detail', 'TEXT'], ['roles', 'TEXT'], ['branch', 'TEXT'], ['worktree', 'TEXT'], ['base', 'TEXT']]) {
   if (!have.has(name)) db.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${def}`)
 }
 
@@ -105,7 +105,7 @@ export const insertClaudeTask = (title, projectId, prompt, roles = null) =>
     .run(title, projectId, prompt, roles ? JSON.stringify(roles) : null)
 // tampilan untuk semua pemain di jaringan: tanpa instruksi, hasil, proyek, peran, biaya, dan id sesi milik pemilik
 export const publicTask = (t) => {
-  const { prompt: _prompt, detail: _detail, session_id: _session, project_id: _project, roles: _roles, cost: _cost, ...rest } = t
+  const { prompt: _prompt, detail: _detail, session_id: _session, project_id: _project, roles: _roles, cost: _cost, branch: _branch, worktree: _worktree, base: _base, ...rest } = t
   return rest
 }
 
