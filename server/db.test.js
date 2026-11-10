@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 
 // env harus terpasang sebelum db.js dimuat, makanya import dinamis
 process.env.KANTOR_DB = ':memory:'
-const { default: db, insertTask, insertClaudeTask, updateTask, getTasksByStatus, getRunningTaskBySession, recoverStuckTasks, publicTask, RESTART_NOTE } = await import('./db.js')
+const { default: db, insertTask, insertClaudeTask, updateTask, getTasksByStatus, getRunningTaskBySession, recoverStuckTasks, publicTask, RESTART_NOTE, getTasks, logSession, getHistory, costSummary } = await import('./db.js')
 
 const add = (title, est = 5) => Number(insertTask(title, est).lastInsertRowid)
 const row = (id) => db.prepare('SELECT * FROM tasks WHERE id=?').get(id)
@@ -69,4 +69,35 @@ test('pemain di jaringan tidak menerima instruksi, hasil, proyek, dan sesi task 
   for (const k of ['prompt', 'detail', 'session_id', 'project_id']) assert.equal(k in shown, false, k)
   assert.equal(getRunningTaskBySession('s9').id, id)
   db.exec('DELETE FROM tasks')
+})
+
+const log = (over = {}) => logSession({
+  task_id: null, project: 'p', state: 'done', runs: 1, tools: 1, denials: 0, cost: 0.1, seconds: 1,
+  subagents: '[]', result: 'ok', error: null, started_at: new Date().toISOString(), ended_at: new Date().toISOString(), ...over,
+})
+
+test('biaya: jumlah semua sesi sebuah task, dan hari ini dipisah dari yang lama', () => {
+  db.exec('DELETE FROM tasks; DELETE FROM session_log')
+  const id = Number(insertClaudeTask('mahal', 'p', 'x', ['planner']).lastInsertRowid)
+  log({ task_id: id, cost: 0.5 })
+  log({ task_id: id, cost: 0.25 }) // revisi: sesi kedua task yang sama
+  log({ cost: 1, ended_at: '2020-01-01T10:00:00.000Z' }) // sesi manual lama
+  assert.equal(getTasks().find((t) => t.id === id).cost, 0.75)
+  const c = costSummary()
+  assert.equal(c.today, 0.75)
+  assert.equal(c.total, 1.75)
+  assert.equal(c.runs, 3)
+  assert.equal(getTasks().find((t) => t.id === id).roles, '["planner"]')
+  const shown = publicTask(getTasks().find((t) => t.id === id))
+  assert.equal('cost' in shown || 'roles' in shown, false) // biaya dan peran tidak dibagikan ke jaringan
+})
+
+test('riwayat: terbaru dulu dan dipangkas ke 200 baris', () => {
+  db.exec('DELETE FROM session_log')
+  for (let i = 0; i < 205; i++) log({ project: `p${i}` })
+  assert.equal(db.prepare('SELECT COUNT(*) c FROM session_log').get().c, 200)
+  const [first] = getHistory(1)
+  assert.equal(first.project, 'p204')
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM session_log WHERE project='p0'").get().c, 0)
+  db.exec('DELETE FROM session_log; DELETE FROM tasks')
 })

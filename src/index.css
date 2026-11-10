@@ -243,6 +243,8 @@ button { cursor: pointer; }
 .prow span { min-width: 0; overflow-wrap: anywhere; font-weight: 800; }
 .prow small { display: block; color: var(--muted); font-weight: 600; }
 .pmanage .sform { margin-bottom: var(--s2); }
+.roles { flex-basis: 100%; padding: var(--s2); font-size: 12px; max-height: 30vh; overflow-y: auto; }
+.roles summary { cursor: pointer; font-weight: 800; margin-bottom: var(--s1); }
 .pcheck { display: flex; align-items: center; gap: var(--s1); font-size: 12px; font-weight: 700; color: var(--muted); }
 .prow .pcheck { margin-top: var(--s1); }
 

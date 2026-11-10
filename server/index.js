@@ -3,7 +3,7 @@ import { WebSocketServer } from 'ws'
 import http from 'node:http'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import db, { getAgents, getTasks, getTasksByStatus, recoverStuckTasks, insertTask, updateTask, getTask, getRunningTaskBySession, insertClaudeTask, publicTask } from './db.js'
+import db, { getAgents, getTasks, getTasksByStatus, recoverStuckTasks, insertTask, updateTask, getTask, getRunningTaskBySession, insertClaudeTask, publicTask, logSession, getHistory, costSummary } from './db.js'
 import { clampToRoom, resolveObstacles, WALL } from '../src/office-plan.js'
 import { parseHook } from './live.js'
 import crypto from 'node:crypto'
@@ -585,6 +585,7 @@ const sessions = createSessions({
     onTool: (s, text) => liveTool(liveKey(s), s.projectName, text),
     onStop: (s) => {
       liveStop(`live-${liveKey(s)}`, { done: DONE, stopped: 'Dihentikan', error: 'Gagal' }[s.state])
+      logSessionEnd(s)
       finishClaudeTask(s)
     },
     // subagent yang dipanggil sesi tampil sebagai karakter tamu sendiri, dibaca dari stream sesi (tanpa hook terpasang)
@@ -645,8 +646,10 @@ const KIT_DIR = path.join(__dirname, '..', '.claude', 'agents')
 const BUDGET = Number(process.env.KANTOR_MAX_BUDGET)
 const MAX_BUDGET = Number.isFinite(BUDGET) && BUDGET > 0 ? BUDGET : 2
 
-function claudeRun() {
-  const kit = loadKitAgents(KIT_DIR)
+// roles: nama subagent yang dipilih untuk task ini (null: semua subagent kit)
+function claudeRun(roles = null) {
+  const all = loadKitAgents(KIT_DIR)
+  const kit = roles ? Object.fromEntries(Object.entries(all).filter(([name]) => roles.includes(name))) : all
   if (!Object.keys(kit).length) return { budget: MAX_BUDGET }
   return { budget: MAX_BUDGET, agentsFile: writeAgentsFile(kit), appendPrompt: orchestrationPrompt(kit) }
 }
@@ -662,12 +665,28 @@ function dispatchClaude() {
   for (const t of getTasksByStatus('todo')) {
     if (t.mode !== 'claude') continue
     if (!projects.some((p) => p.id === t.project_id)) { toReview(t, 'Proyek sudah tidak ada di daftar.'); continue }
-    const r = sessions.start({ projectId: t.project_id, prompt: t.prompt || t.title, run: claudeRun() })
+    const r = sessions.start({ projectId: t.project_id, prompt: t.prompt || t.title, run: claudeRun(parseRoles(t.roles)) })
     if (r.busy) break
     if (r.error) { toReview(t, 'Gagal dimulai.', r.error); continue }
     updateTask(t.id, { status: 'in_progress', session_id: r.id, output: null, detail: null })
     broadcast({ type: 'task-update' })
   }
+}
+
+const parseRoles = (v) => { try { const r = JSON.parse(v); return Array.isArray(r) ? r : null } catch { return null } }
+
+// setiap akhir sesi dicatat (task maupun manual): dasar biaya dan riwayat
+function logSessionEnd(s) {
+  const t = getRunningTaskBySession(s.id)
+  try {
+    logSession({
+      task_id: t?.id ?? null, project: s.projectName, state: s.state, runs: s.runs, tools: s.tools,
+      denials: s.result?.denials ?? 0, cost: s.result?.cost ?? 0, seconds: s.result?.seconds ?? null,
+      subagents: JSON.stringify([...s.subagents.values()].map((x) => x.type)),
+      result: s.result?.text || s.lastText || null, error: s.error ?? null,
+      started_at: new Date(s.startedAt).toISOString(), ended_at: new Date().toISOString(),
+    })
+  } catch { /* riwayat gagal tertulis tidak boleh menjatuhkan sesi */ }
 }
 
 // sesi selesai, gagal, atau dihentikan: task menunggu keputusan di kolom Review
@@ -694,7 +713,16 @@ app.post('/api/tasks/claude', control(true), (req, res) => {
   if (!projects.some((p) => p.id === req.body?.projectId)) return res.status(400).json({ error: 'proyek tidak dikenal' })
   if (prompt.length > MAX_PROMPT) return res.status(400).json({ error: `instruksi terlalu panjang (maksimal ${MAX_PROMPT} huruf)` })
   if (prompt.startsWith('-')) return res.status(400).json({ error: 'instruksi tidak boleh diawali tanda minus' })
-  const info = insertClaudeTask(title, req.body.projectId, prompt)
+  // roles: pilihan subagent; kosong atau semua dipilih berarti semua subagent kit
+  let roles = null
+  if (req.body?.roles !== undefined && req.body?.roles !== null) {
+    const kit = Object.keys(loadKitAgents(KIT_DIR))
+    const given = Array.isArray(req.body.roles) ? [...new Set(req.body.roles)] : null
+    if (!given || given.some((n) => !kit.includes(n))) return res.status(400).json({ error: 'peran tidak dikenal' })
+    if (given.length === 0) return res.status(400).json({ error: 'pilih minimal satu peran' })
+    if (given.length < kit.length) roles = given
+  }
+  const info = insertClaudeTask(title, req.body.projectId, prompt, roles)
   broadcast({ type: 'task-update' })
   dispatchClaude()
   res.status(201).json(getTask(info.lastInsertRowid))
@@ -725,6 +753,15 @@ app.post('/api/tasks/:id/revise', control(true), (req, res) => {
   res.json({ ok: true })
 })
 
+// daftar peran (subagent kit) untuk form task; writes: true berarti boleh mengubah file
+app.get('/api/kit', control(true), (_req, res) => {
+  const kit = loadKitAgents(KIT_DIR)
+  res.json(Object.entries(kit).map(([name, a]) => ({
+    name, description: a.description.slice(0, 160), writes: (a.tools ?? []).some((t) => ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'].includes(t)),
+  })))
+})
+app.get('/api/history', control(true), (_req, res) => res.json(getHistory(50)))
+app.get('/api/costs', control(true), (_req, res) => res.json(costSummary()))
 app.get('/api/sessions', control(true), (_req, res) => res.json(sessions.list()))
 app.post('/api/sessions', control(true), (req, res) => {
   const r = sessions.start({ projectId: req.body?.projectId, prompt: req.body?.prompt })

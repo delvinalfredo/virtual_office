@@ -14,6 +14,7 @@ export function Sessions({ control }) {
   const [prompt, setPrompt] = useState('')
   const [busy, setBusy] = useState(false)
   const [cont, setCont] = useState(null) // { id, text }
+  const [hist, setHist] = useState(null) // riwayat sesi tersimpan; null: belum dibuka
   // pilihan di form tugas mengikuti daftar: bila belum dipilih atau proyeknya dihapus, pakai yang pertama
   const chosen = projects.some((p) => p.id === projectId) ? projectId : (projects[0]?.id ?? '')
 
@@ -70,6 +71,13 @@ export function Sessions({ control }) {
     e.preventDefault()
     if (!cont?.text.trim() || busy) return
     if (await act('POST', `/api/sessions/${id}/continue`, { prompt: cont.text })) setCont(null)
+  }
+
+  const loadHistory = () => {
+    call('GET', '/api/history')
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('ditolak'))))
+      .then(setHist)
+      .catch(() => setError('Riwayat tidak bisa dimuat.'))
   }
 
   const running = (list ?? []).filter((s) => s.state === 'running' || s.state === 'stopping').length
@@ -201,6 +209,34 @@ export function Sessions({ control }) {
               </li>
             ))}
           </ul>
+          <details className="pmanage" onToggle={(e) => { if (e.currentTarget.open) loadHistory() }}>
+            <summary>Riwayat sesi</summary>
+            {hist === null && <p className="empty">Memuat riwayat.</p>}
+            {hist?.length === 0 && <p className="empty">Belum ada sesi tersimpan.</p>}
+            <ul className="slist">
+              {hist?.map((h) => {
+                const types = [...new Set(JSON.parse(h.subagents || '[]'))]
+                return (
+                  <li key={h.id} className="sess panel">
+                    <div className="shead">
+                      <b>{h.project}</b>
+                      <span className={`chip ${h.state}`}>{STATE_LABEL[h.state] ?? h.state}</span>
+                    </div>
+                    <div className="sact">
+                      {new Date(h.ended_at).toLocaleString()}, {h.tools} tool{h.cost > 0 ? `, $${h.cost.toFixed(2)}` : ''}
+                      {types.length ? `, subagent: ${types.join(', ')}` : ''}
+                    </div>
+                    {(h.result || h.error) && (
+                      <details>
+                        <summary>Hasil</summary>
+                        <pre>{h.error || h.result}</pre>
+                      </details>
+                    )}
+                  </li>
+                )
+              })}
+            </ul>
+          </details>
         </section>
       )}
     </>

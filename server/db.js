@@ -31,9 +31,30 @@ CREATE TABLE IF NOT EXISTS tasks (
 // Kolom untuk task yang dikerjakan Claude Code. Database lama ditambah kolomnya saat server mulai.
 //   mode: 'sim' (agent simulasi) atau 'claude'; prompt, detail, session_id, project_id hanya dilihat pemilik komputer
 const have = new Set(db.prepare('PRAGMA table_info(tasks)').all().map((c) => c.name))
-for (const [name, def] of [['mode', "TEXT NOT NULL DEFAULT 'sim'"], ['project_id', 'TEXT'], ['session_id', 'TEXT'], ['prompt', 'TEXT'], ['detail', 'TEXT']]) {
+for (const [name, def] of [['mode', "TEXT NOT NULL DEFAULT 'sim'"], ['project_id', 'TEXT'], ['session_id', 'TEXT'], ['prompt', 'TEXT'], ['detail', 'TEXT'], ['roles', 'TEXT']]) {
   if (!have.has(name)) db.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${def}`)
 }
+
+// Riwayat setiap sesi Claude (task maupun manual): dasar biaya dan daftar riwayat di panel. Hanya untuk pemilik komputer.
+db.exec(`
+CREATE TABLE IF NOT EXISTS session_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id INTEGER,
+  project TEXT NOT NULL,
+  state TEXT NOT NULL,
+  runs INTEGER NOT NULL DEFAULT 1,
+  tools INTEGER NOT NULL DEFAULT 0,
+  denials INTEGER NOT NULL DEFAULT 0,
+  cost REAL NOT NULL DEFAULT 0,
+  seconds REAL,
+  subagents TEXT,
+  result TEXT,
+  error TEXT,
+  started_at TEXT NOT NULL,
+  ended_at TEXT NOT NULL
+);
+`)
+const KEEP_LOG = 200
 
 // seed agents hanya sekali (tabel agents awalnya kosong)
 const n = db.prepare('SELECT COUNT(*) c FROM agents').get().c
@@ -47,8 +68,9 @@ if (n === 0) {
 }
 
 export const getAgents = () => db.prepare('SELECT * FROM agents').all()
+// cost: jumlah biaya semua sesi task itu (0 untuk task simulasi)
 export const getTasks = () =>
-  db.prepare('SELECT * FROM tasks ORDER BY id DESC').all()
+  db.prepare('SELECT t.*, (SELECT COALESCE(SUM(cost), 0) FROM session_log WHERE task_id = t.id) AS cost FROM tasks t ORDER BY t.id DESC').all()
 
 // antrian: yang paling lama menunggu duluan (getTasks sengaja DESC untuk tampilan board)
 export const getTasksByStatus = (status) =>
@@ -77,11 +99,13 @@ export const getTask = (id) => db.prepare('SELECT * FROM tasks WHERE id=?').get(
 // hanya task yang sedang jalan yang dicari lewat sesi, supaya id sesi lama tidak salah sasaran
 export const getRunningTaskBySession = (sid) =>
   db.prepare("SELECT * FROM tasks WHERE session_id=? AND status='in_progress' AND mode='claude'").get(sid)
-export const insertClaudeTask = (title, projectId, prompt) =>
-  db.prepare("INSERT INTO tasks (title, mode, project_id, prompt) VALUES (?, 'claude', ?, ?)").run(title, projectId, prompt)
-// tampilan untuk semua pemain di jaringan: tanpa instruksi, hasil, proyek, dan id sesi milik pemilik
+// roles: nama subagent yang boleh dipakai (null: semua subagent kit)
+export const insertClaudeTask = (title, projectId, prompt, roles = null) =>
+  db.prepare("INSERT INTO tasks (title, mode, project_id, prompt, roles) VALUES (?, 'claude', ?, ?, ?)")
+    .run(title, projectId, prompt, roles ? JSON.stringify(roles) : null)
+// tampilan untuk semua pemain di jaringan: tanpa instruksi, hasil, proyek, peran, biaya, dan id sesi milik pemilik
 export const publicTask = (t) => {
-  const { prompt: _prompt, detail: _detail, session_id: _session, project_id: _project, ...rest } = t
+  const { prompt: _prompt, detail: _detail, session_id: _session, project_id: _project, roles: _roles, cost: _cost, ...rest } = t
   return rest
 }
 
@@ -98,5 +122,17 @@ export const updateTask = (id, fields) => {
 export const numTasks = {
   byStatus: (status) => db.prepare('SELECT COUNT(*) c FROM tasks WHERE status=?').get(status).c,
 }
+
+export const logSession = (r) => {
+  db.prepare(`INSERT INTO session_log (task_id, project, state, runs, tools, denials, cost, seconds, subagents, result, error, started_at, ended_at)
+              VALUES (@task_id, @project, @state, @runs, @tools, @denials, @cost, @seconds, @subagents, @result, @error, @started_at, @ended_at)`).run(r)
+  db.prepare('DELETE FROM session_log WHERE id <= (SELECT MAX(id) FROM session_log) - ?').run(KEEP_LOG)
+}
+export const getHistory = (limit = 50) => db.prepare('SELECT * FROM session_log ORDER BY id DESC LIMIT ?').all(limit)
+// biaya sesi hari ini (menurut jam komputer) dan seluruh riwayat yang tersimpan
+export const costSummary = () => db.prepare(`
+  SELECT COALESCE(SUM(CASE WHEN date(ended_at, 'localtime') = date('now', 'localtime') THEN cost END), 0) AS today,
+         COALESCE(SUM(cost), 0) AS total, COUNT(*) AS runs
+  FROM session_log`).get()
 
 export default db

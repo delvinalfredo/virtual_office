@@ -198,3 +198,10 @@ test('subagent tanpa task_notification dianggap selesai dari hasil panggilan Age
   assert.deepEqual(get(sessions, id).subagents.map((x) => x.state), ['done', 'done'])
   assert.deepEqual(stops, ['tu-a', 'tu-b']) // tidak ada henti ganda saat sesi berakhir
 })
+
+test('biaya sesi dibaca dari hasil; tanpa angka sahih dianggap nol', async () => {
+  const { sessions } = make()
+  const { id } = sessions.start({ projectId: 'a', prompt: 'hitung biaya' })
+  await waitFor(() => get(sessions, id).state === 'done')
+  assert.equal(get(sessions, id).result.cost, 0.25)
+})

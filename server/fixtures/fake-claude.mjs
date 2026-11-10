@@ -33,4 +33,5 @@ out({
   type: 'result', subtype: 'success', is_error: false, session_id: sid, num_turns: 2, duration_ms: 1234,
   result: `Hasil: ${prompt} | cwd=${process.cwd()} | args=${JSON.stringify(argv.slice(2))}`,
   permission_denials: prompt.includes('tolak') ? [{ tool_name: 'Bash' }] : [],
+  total_cost_usd: 0.25,
 })

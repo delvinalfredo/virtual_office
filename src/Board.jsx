@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import { sfx } from './sfx'
 
 const COLS = [
   { key: 'todo', label: 'To Do' },
@@ -7,9 +8,20 @@ const COLS = [
   { key: 'done', label: 'Done' },
 ]
 
-function StatsPanel() {
+const usd = (n) => `$${(n ?? 0).toFixed(2)}`
+
+function StatsPanel({ control }) {
   const [stats, setStats] = useState(null) // null = memuat
   const [failed, setFailed] = useState(false)
+  const [cost, setCost] = useState(null) // { today, total, runs }; hanya untuk pemilik komputer
+  const { on, call } = control
+  useEffect(() => {
+    if (!on) return
+    const load = () => call('GET', '/api/costs').then((r) => (r.ok ? r.json() : null)).then(setCost).catch(() => {})
+    load()
+    const iv = setInterval(load, 5000)
+    return () => clearInterval(iv)
+  }, [on, call])
   useEffect(() => {
     const load = () => fetch('/api/stats').then((r) => r.json()).then((d) => { setStats(d); setFailed(false) }).catch(() => setFailed(true))
     load()
@@ -23,6 +35,11 @@ function StatsPanel() {
       {failed && <p className="empty">Server tidak terjangkau, mencoba lagi.</p>}
       {!failed && stats === null && <p className="empty">Memuat data.</p>}
       {stats?.length === 0 && <p className="empty">Belum ada data.</p>}
+      {cost && (
+        <p className="note">
+          Biaya Claude Code: {usd(cost.today)} hari ini, {usd(cost.total)} dari {cost.runs} sesi tersimpan.
+        </p>
+      )}
       {stats?.map((s) => (
         <div key={s.id} className="srow">
           <div>
@@ -56,6 +73,17 @@ export function Board({ tasks, onDelete, control }) {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [open])
+
+  // jumlah task Claude yang menunggu keputusanmu tampil di judul tab; bunyi saat bertambah (bukan saat halaman dibuka)
+  const pending = control.on ? tasks.filter((t) => t.mode === 'claude' && t.status === 'review').length : 0
+  const prevPending = useRef(null)
+  const baseTitle = useRef(document.title)
+  useEffect(() => {
+    document.title = pending ? `(${pending}) ${baseTitle.current}` : baseTitle.current
+    if (prevPending.current !== null && pending > prevPending.current) sfx.done()
+    prevPending.current = pending
+  }, [pending])
+  useEffect(() => () => { document.title = baseTitle.current }, [])
 
   const projectName = (id) => control.projects.find((p) => p.id === id)?.name ?? id
 
@@ -91,7 +119,7 @@ export function Board({ tasks, onDelete, control }) {
       >
         {showStats ? 'Tutup report' : 'Report tim'}
       </button>
-      {showStats && <StatsPanel />}
+      {showStats && <StatsPanel control={control} />}
 
       <div className={`board${tasks.some((t) => t.mode === 'claude') ? ' wide' : ''}`}>
         {COLS.map((c) => {
@@ -125,7 +153,7 @@ export function Board({ tasks, onDelete, control }) {
                         <div className="bar"><i style={{ transform: `scaleX(${Math.min(1, t.progress / t.est)})` }} /></div>
                       )}
                       {t.agent_id && <div className="who">@{t.agent_id}</div>}
-                      {claude && <div className="who">{CLAUDE}{mine && t.project_id ? `, ${projectName(t.project_id)}` : ''}</div>}
+                      {claude && <div className="who">{CLAUDE}{mine && t.project_id ? `, ${projectName(t.project_id)}` : ''}{mine && t.cost > 0 ? `, ${usd(t.cost)}` : ''}</div>}
                       {claude && t.status === 'in_progress' && (
                         <div className="tlive">
                           {session
@@ -207,14 +235,27 @@ export function TaskForm({ onAdd, control }) {
   const [prompt, setPrompt] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [kit, setKit] = useState(null) // peran (subagent kit); null: belum dimuat
+  const [picked, setPicked] = useState(null) // null: semua peran; selain itu daftar nama yang dipilih
 
   const canClaude = control.on && control.projects.length > 0
   const claude = who === 'claude' && canClaude
   const chosen = control.projects.some((p) => p.id === projectId) ? projectId : (control.projects[0]?.id ?? '')
 
+  const loadKit = control.call
+  useEffect(() => {
+    if (!claude || kit) return
+    loadKit('GET', '/api/kit').then((r) => (r.ok ? r.json() : [])).then(setKit).catch(() => setKit([]))
+  }, [claude, kit, loadKit])
+
+  const toggleRole = (name) => {
+    const now = picked ?? kit.map((k) => k.name)
+    setPicked(now.includes(name) ? now.filter((n) => n !== name) : [...now, name])
+  }
+
   const addClaude = async () => {
     try {
-      const r = await control.call('POST', '/api/tasks/claude', { title: title.trim(), projectId: chosen, prompt })
+      const r = await control.call('POST', '/api/tasks/claude', { title: title.trim(), projectId: chosen, prompt, ...(picked && { roles: picked }) })
       if (r.ok) return { ok: true }
       const body = await r.json().catch(() => ({}))
       return { ok: false, error: body.error ?? 'task gagal ditambahkan' }
@@ -234,6 +275,7 @@ export function TaskForm({ onAdd, control }) {
     setError('')
     setTitle('')
     setPrompt('')
+    setPicked(null)
   }
 
   return (
@@ -267,6 +309,17 @@ export function TaskForm({ onAdd, control }) {
             placeholder="Instruksi rinci (kosong: pakai judul)"
             aria-label="Instruksi untuk Claude Code"
           />
+          {kit?.length > 0 && (
+            <details className="roles panel">
+              <summary>Peran subagent: {picked ? `${picked.length} dari ${kit.length}` : 'semua'}</summary>
+              {kit.map((k) => (
+                <label key={k.name} className="pcheck" title={k.description}>
+                  <input type="checkbox" checked={!picked || picked.includes(k.name)} onChange={() => toggleRole(k.name)} />
+                  {k.name}{k.writes ? ' (mengubah file)' : ''}
+                </label>
+              ))}
+            </details>
+          )}
         </>
       ) : (
         <select className="field" value={est} onChange={(e) => setEst(Number(e.target.value))} aria-label="Estimasi pengerjaan">

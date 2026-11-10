@@ -57,6 +57,7 @@ export function createSessions({ projects, bin = 'claude', maxRunning = 3, timeo
         turns: Number.isFinite(m.num_turns) ? m.num_turns : null,
         seconds: Number.isFinite(m.duration_ms) ? Math.round(m.duration_ms / 100) / 10 : null,
         denials: Array.isArray(m.permission_denials) ? m.permission_denials.length : 0,
+        cost: Number.isFinite(m.total_cost_usd) && m.total_cost_usd >= 0 ? m.total_cost_usd : 0,
       }
       if (ok && text) s.lastText = clip(text, 400)
     }
