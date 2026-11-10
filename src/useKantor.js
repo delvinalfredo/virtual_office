@@ -1,5 +1,26 @@
 import { useEffect, useState, useRef, useCallback } from 'react'
 import { sfx } from './sfx'
+import { noteServerTime, push, resetInterp } from './interp'
+
+// Posisi tidak lagi disimpan di state React. Tiap paket masuk ke penyimpan interpolasi (src/interp.js) dan
+// dibaca per frame oleh karakternya. State React hanya berubah bila hal yang tampak berbeda (status, bubble,
+// siapa yang ada), jadi aplikasi tidak dirender ulang 20 kali per detik.
+const agentSig = (list) => list.map((a) => `${a.id}|${a.state}|${a.bubble ?? ''}|${a.label ?? ''}|${a.live ? 1 : 0}`).join('\n')
+const peerSig = (list) => list.map((p) => `${p.name}|${p.level}`).join('\n')
+// Server lama belum mengirim cap waktu: pakai waktu tiba paket sebagai gantinya, supaya karakter tidak membeku.
+function ingestAgents(list, ts) {
+  const now = performance.now()
+  const stamp = Number.isFinite(ts) ? ts : now
+  noteServerTime('agent', stamp, now)
+  for (const a of list) push('agent', a.id, stamp, a.x, a.z, a.heading)
+}
+function ingestPeers(list) {
+  const now = performance.now()
+  for (const p of list) {
+    const stamp = Number.isFinite(p.ts) ? p.ts : now
+    if (push('peer', p.name, stamp, p.x, p.z, 0, p.level)) noteServerTime('peer', stamp, now)
+  }
+}
 
 // koneksi ke server kantor: snapshot awal + update agents/tasks/peers
 export function useKantor() {
@@ -9,7 +30,10 @@ export function useKantor() {
   const [peers, setPeers] = useState([]) // pemain lain (server tidak mengirim diri sendiri)
   const [chat, setChat] = useState([]) // {name,text,agent,at}
   const [online, setOnline] = useState(true)
+  const [sessionsTick, setSessionsTick] = useState(0) // naik tiap server memberi sinyal sesi Claude berubah
   const wsRef = useRef(null)
+  const agentSigRef = useRef('')
+  const peerSigRef = useRef('')
   const tasksRef = useRef(tasks)
   tasksRef.current = tasks
 
@@ -29,15 +53,26 @@ export function useKantor() {
       ws.onmessage = (e) => {
         const m = JSON.parse(e.data)
         if (m.type === 'snapshot') {
+          resetInterp() // server baru atau sambungan baru: jam dan riwayat posisi lama tidak berlaku
+          ingestAgents(m.agents, m.ts)
+          ingestPeers(m.peers ?? [])
+          agentSigRef.current = agentSig(m.agents)
+          peerSigRef.current = peerSig(m.peers ?? [])
           setAgents(m.agents)
           setAgentsStatic(m.agentsStatic)
           setTasks(m.tasks)
           setPeers(m.peers ?? [])
           setChat(m.chat ?? [])
         } else if (m.type === 'agents') {
-          setAgents(m.agents)
+          ingestAgents(m.agents, m.ts)
+          const sig = agentSig(m.agents)
+          if (sig !== agentSigRef.current) { agentSigRef.current = sig; setAgents(m.agents) }
         } else if (m.type === 'peers') {
-          setPeers(m.peers)
+          ingestPeers(m.peers)
+          const sig = peerSig(m.peers)
+          if (sig !== peerSigRef.current) { peerSigRef.current = sig; setPeers(m.peers) }
+        } else if (m.type === 'sessions') {
+          setSessionsTick((t) => t + 1)
         } else if (m.type === 'chat') {
           setChat((c) => [...c.slice(-50), m])
           sfx.key()
@@ -101,5 +136,5 @@ export function useKantor() {
     }
   }, [])
 
-  return { agents, agentsStatic, tasks, peers, chat, online, addTask, sendPos, sendChat }
+  return { agents, agentsStatic, tasks, peers, chat, online, sessionsTick, addTask, sendPos, sendChat }
 }

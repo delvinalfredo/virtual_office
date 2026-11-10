@@ -1,4 +1,7 @@
+import { useRef, useLayoutEffect, memo } from 'react'
+import * as THREE from 'three'
 import { Box, Ink } from './props'
+import { Merged } from './merge'
 import { toonGradient } from './toon'
 
 const WALL = 12
@@ -103,30 +106,41 @@ function Arcade({ x, z, rot = 0 }) {
   )
 }
 
-// papan lantai kayu: some strips bergaris dengan warna sedikit beda
+// Papan lantai kayu: 576 papan dengan warna sedikit berbeda, digambar sebagai satu mesh instansi
+// (satu draw call). Sebelumnya tiap papan satu mesh sehingga lantai saja memakai ratusan draw call.
+const FLOOR_N = 24
+const FLOOR_COLORS = ['#d9a05b', '#d2954e', '#cf9450', '#d8a660', '#c98f45']
 function WoodFloor() {
-  const strips = []
-  const n = 24
-  for (let i = 0; i < n; i++) {
-    for (let j = 0; j < n; j++) {
-      const shade = ((i * 7 + j * 13) % 5) * 0.5
-      const colors = ['#d9a05b', '#d2954e', '#cf9450', '#d8a660', '#c98f45']
-      strips.push(
-        <mesh key={`${i}-${j}`} position={[-WALL + (j + 0.5) * (2 * WALL) / n, 0.03 + (i % 2) * 0.001, -WALL + (i + 0.5) * (2 * WALL) / n]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
-          <planeGeometry args={[(2 * WALL) / n - 0.04, (2 * WALL) / n - 0.02]} />
-          <meshStandardMaterial color={colors[(i + j) % 5]} />
-        </mesh>
-      )
+  const ref = useRef()
+  useLayoutEffect(() => {
+    const step = (2 * WALL) / FLOOR_N
+    const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(-Math.PI / 2, 0, 0))
+    const m = new THREE.Matrix4()
+    const pos = new THREE.Vector3()
+    const one = new THREE.Vector3(1, 1, 1)
+    const col = new THREE.Color()
+    for (let i = 0; i < FLOOR_N; i++) {
+      for (let j = 0; j < FLOOR_N; j++) {
+        const k = i * FLOOR_N + j
+        pos.set(-WALL + (j + 0.5) * step, 0.03 + (i % 2) * 0.001, -WALL + (i + 0.5) * step)
+        ref.current.setMatrixAt(k, m.compose(pos, q, one))
+        ref.current.setColorAt(k, col.set(FLOOR_COLORS[(i + j) % 5]))
+      }
     }
-  }
+    ref.current.instanceMatrix.needsUpdate = true
+    ref.current.instanceColor.needsUpdate = true
+  }, [])
   return (
     <group>
-      {/* dasar tanah di bawah strip, supaya celah tidak memperlihatkan rumput */}
+      {/* dasar tanah di bawah papan, supaya celah tidak memperlihatkan rumput */}
       <mesh position={[0, 0.02, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
         <planeGeometry args={[2 * WALL, 2 * WALL]} />
         <meshStandardMaterial color="#c98f45" />
       </mesh>
-      {strips}
+      <instancedMesh ref={ref} args={[undefined, undefined, FLOOR_N * FLOOR_N]} receiveShadow frustumCulled={false}>
+        <planeGeometry args={[(2 * WALL) / FLOOR_N - 0.04, (2 * WALL) / FLOOR_N - 0.02]} />
+        <meshStandardMaterial />
+      </instancedMesh>
     </group>
   )
 }
@@ -264,9 +278,10 @@ function Bookshelf({ x, z, rot = 0 }) {
   )
 }
 
-export default function Office() {
+// semua benda diam digabung per jenis bahan oleh <Merged>, jadi seluruh kantor hanya beberapa draw call
+function Office() {
   return (
-    <group>
+    <Merged>
       <WoodFloor />
 
       {/* rumput di luar */}
@@ -388,6 +403,8 @@ export default function Office() {
           <meshToonMaterial color="#bf8bff" emissive="#8e44ad" emissiveIntensity={0.9} />
         </mesh>
       </group>
-    </group>
+    </Merged>
   )
 }
+
+export default memo(Office)

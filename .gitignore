@@ -29,6 +29,7 @@ Thumbs.db
 desktop.ini
 
 # runtime data lokal
+server/projects.json
 server/kantor.db
 server/kantor.db-wal
 server/kantor.db-shm

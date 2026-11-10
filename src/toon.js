@@ -36,3 +36,10 @@ export function basicMat(color) {
 
 // garis tepi: salinan mesh yang sedikit membesar, hanya sisi dalamnya yang digambar
 export const OUTLINE_MAT = new THREE.MeshBasicMaterial({ color: INK, side: THREE.BackSide })
+
+// bahan untuk geometri gabungan: warna per titik, bukan per bahan (lihat merge.jsx)
+let merged
+export function mergedToonMat() {
+  if (!merged) merged = new THREE.MeshToonMaterial({ vertexColors: true, gradientMap: toonGradient() })
+  return merged
+}

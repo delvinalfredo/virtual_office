@@ -45,6 +45,7 @@ Cross-module paths only: entry point → module → where state lands or which e
 - `server/index.js` sim loop (`setInterval` 50 ms) + dispatcher (1 s) → `dispatch` / `dispatchReview` → `updateTask` di `server/db.js` → SQLite → broadcast `agents` dan `task-update`: terus-menerus selama server hidup
 - `server/index.js` dan `src/Avatar.jsx` sama-sama mengimpor `src/office-plan.js` (`clampToRoom`, `resolveObstacles`, `WALL`) untuk collision: tiap tick gerakan agent di server dan pemain di klien
 - Claude Code hook `SubagentStart` / `SubagentStop` / `PreToolUse` (HTTP) → `POST /api/events` (hanya dari loopback) → `server/live.js` (`parseHook`) → `liveStart` / `liveTool` / `liveStop` di `server/index.js` → agen `live-*` di Map yang sama dengan agen simulasi → broadcast `agents` → `src/AgentAvatars.jsx`: tiap event hook
+- [pengguna lokal] `Sessions` (tombol Sesi Claude) → pilih proyek terdaftar + tugas → `POST /api/sessions` (loopback, token, Host dan Origin lokal) → `server/sessions.js` menjalankan `claude -p` di folder proyek → keluaran stream-json → kartu sesi dan karakter berlabel nama proyek di kantor → Lanjutkan (`--resume`) atau Hentikan: tiap tugas
 - Dev: Vite (`vite.config.js`) proxy `/ws` dan `/api` → `localhost:3000`; Prod: Express `express.static('dist')`: setiap request halaman
 
 ### Flow Diagram
@@ -72,14 +73,15 @@ Only what the repository shows. `none` for a row the project does not have; neve
 - Modules: `server` in `server/` — Express + ws server, simulasi agent, dispatcher task, REST API, SQLite access (`db.js`), penerjemah payload hook (`live.js`)
 - Modules: `scene` in `src/` — `Office.jsx`, `Rooftop.jsx`, `SkyDeco.jsx` (awan), `Humanoid.jsx` (karakter chibi), `props.jsx` (`Box` dan `Ink` bergaris tepi untuk perabot), `Avatar.jsx` (Player), `AgentAvatars.jsx`, `PeerAvatars.jsx`, `ChatBubble.jsx`, `Burst.jsx` (konfeti), `toon.js` (bahan toon dan outline bersama), `looks.js` (tampilan tiap karakter), `motion.js` (peredam gerak), `theme3d.js` (warna 3D), `office-plan.js` (denah dan collision, dipakai server juga)
 - Modules: `ui` in `src/` — `Board.jsx` (kanban + `TaskForm`), `ChatUI.jsx`, `AgentDM.jsx`, `Minimap.jsx`, `sfx.js`; gayanya di `src/index.css`
-- Modules: `state` in `src/` — `useKantor.js` (WS + REST client), `useKeyboard.js`
+- Modules: `state` in `src/` — `useKantor.js` (WS + REST client), `interp.js` (interpolasi posisi karakter lain), `useKeyboard.js`
+- Modules: `sessions` — `server/sessions.js` (proses `claude -p`), `server/control.js` (penjaga), `server/projects.js` (daftar folder), `src/Sessions.jsx` (panel)
 - Authentication: none; nama pemain acak dari klien, server hanya memotong 24 karakter dan menambah suffix bila bentrok
 - Roles: none untuk pengguna; agent simulasi punya role `programmer`, `designer`, `qa`, `lead` (seed di `server/db.js`), hanya `lead` yang mereview
 - Approval chain: none untuk pengguna; di simulasi, task worker selesai → status `review` → agent `lead` mengubahnya ke `done`
 
 ## Environments & Jobs
 
-- Environments: local saja; satu database `server/kantor.db` di sebelah server; env yang dibaca: `PORT` (default 3000), `KANTOR_DB` (path database, `:memory:` dipakai test), `LIVE_LINGER_MS` (lama tamu agen berdiam setelah selesai, default 4000); tidak ada `.env.example`
+- Environments: local saja; satu database `server/kantor.db` di sebelah server; env yang dibaca: `PORT` (default 3000), `KANTOR_DB` (path database, `:memory:` dipakai test), `LIVE_LINGER_MS` (lama tamu agen berdiam setelah selesai, default 4000), `KANTOR_PROJECTS` (path daftar proyek, default `server/projects.json`), `KANTOR_CLAUDE_BIN` (program claude, diganti Claude palsu saat uji); tidak ada `.env.example`
 - Scheduled jobs and workers: in-process `setInterval` di `server/index.js`: sim loop tiap 50 ms (gerak agent, progress task), `dispatch` + `dispatchReview` tiap 1 detik; saat start, `recoverStuckTasks` mengembalikan task `in_progress` ke `todo` (review lead ke `review`); tidak ada cron atau worker terpisah
 
 ## Architecture Notes
@@ -99,6 +101,9 @@ Module boundaries and who owns what.
 - Teks bubble `Disetujui` (konstanta `APPROVED` di `server/index.js`) juga dibaca `src/AgentAvatars.jsx` sebagai pemicu konfeti; ubah keduanya bersama.
 - Tamu agen nyata (`live: true`) memakai loop gerak yang sama dengan agen simulasi tetapi tanpa task di database: dispatcher, balasan chat, dan perilaku idle melewati mereka. Maksimal 12 sekaligus; id dari `agent_id` hook; tampilan dari `agent_type` (tipe sama, tampilan sama; label diberi nomor bila kembar). Kursi hanya di titik yang terjangkau jalan lurus dari pintu (`SEATS`), karena agen tidak punya pencarian rute.
 - `SubagentStart` tidak membawa deskripsi tugas; deskripsi diambil dari `PreToolUse` tool `Agent` di sesi utama dan dipasangkan menurut tipe subagent (antrian, kedaluwarsa 2 menit). Dari payload hook hanya nama tool, nama file tanpa folder, dan kata pertama perintah yang dipakai; isi file, perintah lengkap, dan hasil subagent tidak disimpan atau dikirim ke klien.
+- Sesi Claude dari dashboard: hanya folder di `server/projects.json` (tidak masuk git; contoh di `projects.example.json`) yang bisa dipilih, dan klien tidak pernah mengirim jalur folder. Izin awal `acceptEdits` plus `--allowedTools` Read, Grep, Glob, Edit, Write; tool lain ditolak dan jumlahnya dilaporkan. Program dijalankan tanpa shell, tugas ditaruh tepat setelah `-p` (sebelum `--allowedTools` yang bisa menelannya), tanpa `--bare` karena itu melewati login. Maksimal 3 sesi berjalan, batas waktu 30 menit, tugas maksimal 4000 huruf dan tidak boleh diawali minus.
+- Posisi agent dan pemain lain tidak disimpan di state React. Server mengirim `ts` (jam simulasi yang naik 50 ms per tick untuk agent, waktu terima untuk pemain); `useKantor.js` memasukkannya ke `src/interp.js`, dan karakter membaca posisi terinterpolasi per frame (tertinggal 120 ms untuk agent, 220 ms untuk pemain). State React hanya berubah bila status, bubble, atau daftar karakter berubah. Tanpa `ts` (server lama) dipakai waktu tiba paket.
+- Kinerja gambar: lantai kayu satu mesh instansi; perabot, awan, dan bagian tubuh karakter yang kaku digabung per kelompok oleh `src/merge.jsx` (satu draw call untuk bahan toon, satu untuk garis tepi; mesh asli hanya disembunyikan); Office, Rooftop, SkyDeco, Player, dan Humanoid dibungkus `memo`. `?perf` menampilkan FPS dan draw call, `?q=0..3` memaksa tingkat kualitas dan menyimpannya; `src/AutoQuality.jsx` menurunkan kualitas otomatis bila di bawah 24 fps tiga detik berturut-turut.
 - Gerak karakter dihitung dari jarak yang ditempuh grup induknya (`Humanoid.jsx`), bukan dari prop. Semua penghalusan memakai `damp` dan `dampAngle` di `src/motion.js` supaya sama di semua frame rate. Pemain lain dikirim tiap 100 ms.
 - Label nama dan bubble adalah DOM lewat `Html` milik drei. Label di `Humanoid.jsx` dipasang satu tick setelah render pertama, karena yang dipasang saat render awal Canvas (hanya Player) tidak muncul di DOM.
 - Warna UI hanya lewat token di `:root` di `src/index.css`; warna adegan 3D yang sama ada di `src/theme3d.js` dan `src/looks.js`. Karakter agent orisinal per role, bukan tokoh berhak cipta.
@@ -126,6 +131,8 @@ Operational limits, deliberate tradeoffs, and things that must not be "fixed".
 
 - Tidak ada autentikasi; pembatasan hanya pesan WS maksimal 4 KB dan satu chat atau DM per 500 ms per koneksi. REST tidak dibatasi. Aplikasi dimaksudkan untuk jaringan lokal atau demo, bukan internet publik.
 - Vite dev diikat ke `127.0.0.1` di `vite.config.js`. Bawaannya (`localhost` jatuh ke IPv6) membuat Chrome di mesin pengembangan menampilkan halaman putih atau "connection was reset". Akses dari jaringan: `npm run dev -- --host`.
+- Kontrol sesi Claude adalah permukaan serangan: server menerima sambungan dari jaringan, jadi `/api/control` dan `/api/sessions*` menolak selain loopback, Host dan Origin non-lokal, dan permintaan tanpa header `X-Kantor-Token` (dibuat acak tiap server start, diambil dashboard lewat `/api/control`). Pemain lain hanya melihat karakter dan bubble generik. Jangan melonggarkan penjaga ini.
+- Menjalankan `claude` dari server memakai login pemilik di komputer ini. Dokumentasi Claude Code melarang menyalurkan login langganan ke pengguna lain lewat aplikasi pihak ketiga dan tidak membahas skrip pribadi secara eksplisit; fitur ini hanya boleh dimulai oleh pemilik komputer. Bila orang lain boleh memberi tugas, harus pindah ke API key. Sesi tanpa `--bare` ikut menjalankan hook dan MCP milik proyek targetnya.
 - Hook Claude Code harus dipasang sendiri di `.claude/settings.json` (contoh di `README.md`); URL-nya memakai port 3000. Endpoint `/api/events` menolak selain loopback dan selalu menjawab 200 untuk payload rusak supaya hook tidak mencatat kegagalan.
 - Riwayat chat (30 pesan) hanya di memori server dan hilang saat restart.
 - Rata-rata waktu di "Report tim" dihitung dari task dibuat sampai selesai, jadi ikut menghitung waktu antre.
@@ -134,6 +141,6 @@ Operational limits, deliberate tradeoffs, and things that must not be "fixed".
 - Satu proses server, state di memori: tidak bisa di-scale horizontal tanpa memindahkan state agent dan peer keluar proses.
 - Balasan chat dan DM agent adalah kalimat kaleng acak, bukan LLM; `output` task juga teks hasil generate acak.
 - `updateTask` membangun SQL dari nama kolom yang dikirim pemanggil; hanya boleh dipanggil dengan kunci yang hardcoded di server, jangan pernah meneruskan field dari request body.
-- Test mencakup antrian dan pemulihan task (`server/db.test.js`) dan parser hook (`server/live.test.js`); WebSocket, simulasi agent, dan UI belum punya test. `npm run lint` (oxlint) masih mengeluarkan peringatan lama.
+- Test mencakup antrian dan pemulihan task (`server/db.test.js`), parser hook (`server/live.test.js`), penjaga kontrol (`server/control.test.js`), mesin sesi dengan Claude palsu di `server/fixtures/fake-claude.mjs` (`server/sessions.test.js`), dan interpolasi (`server/interp.test.js`); WebSocket, simulasi agent, dan UI belum punya test. `npm run lint` (oxlint) masih mengeluarkan peringatan lama.
 
 > Do not store secrets, tokens, passwords, or private credentials here.

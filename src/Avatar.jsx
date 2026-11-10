@@ -1,4 +1,4 @@
-import { useRef, useEffect } from 'react'
+import { useRef, useEffect, memo } from 'react'
 import { useFrame, useThree } from '@react-three/fiber'
 import * as THREE from 'three'
 import { useKeyboard } from './useKeyboard'
@@ -9,7 +9,7 @@ import Humanoid from './Humanoid'
 
 const SPEED = 5
 
-export function Player({ onPos = null, teleportRef = null }) {
+function PlayerBase({ onPos = null, teleportRef = null }) {
   const keys = useKeyboard()
   const group = useRef()
   const pos = useRef(new THREE.Vector3(0, 0, 6))
@@ -116,3 +116,6 @@ export function Player({ onPos = null, teleportRef = null }) {
     </group>
   )
 }
+
+// props stabil, jadi pemain tidak dirender ulang tiap kali server mengirim posisi agent
+export const Player = memo(PlayerBase)

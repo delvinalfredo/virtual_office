@@ -1,8 +1,9 @@
-import { useRef } from 'react'
+import { useRef, memo } from 'react'
 import { useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
 import { toonMat, OUTLINE_MAT } from './toon'
 import { CLOUD } from './theme3d'
+import { Merged } from './merge'
 
 const PUFF = new THREE.SphereGeometry(1, 16, 12)
 
@@ -18,11 +19,12 @@ const SPOTS = [
 const RING = 38
 
 // Awan melayang pelan mengelilingi kantor, jauh di atas dan di luar dinding.
-export default function SkyDeco() {
+function SkyDeco() {
   const ring = useRef()
   useFrame((_, dt) => { ring.current.rotation.y += Math.min(dt, 0.05) * 0.012 })
   return (
     <group ref={ring}>
+      <Merged>
       {SPOTS.map(([shape, y, ang], i) => (
         <group key={i} position={[Math.sin(ang) * RING, y, Math.cos(ang) * RING]} rotation={[0, ang, 0]}>
           {SHAPES[shape].map(([x, py, z, r], j) => (
@@ -32,6 +34,9 @@ export default function SkyDeco() {
           ))}
         </group>
       ))}
+      </Merged>
     </group>
   )
 }
+
+export default memo(SkyDeco)

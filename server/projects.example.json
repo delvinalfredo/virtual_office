@@ -1,0 +1,4 @@
+[
+  { "name": "proyek-satu", "path": "D:/Kodingan/proyek-satu" },
+  { "name": "proyek-dua", "path": "D:/Kodingan/proyek-dua", "allowedTools": ["Read", "Grep", "Glob", "Edit", "Write", "Bash(git status)"] }
+]

@@ -6,6 +6,10 @@ import { fileURLToPath } from 'node:url'
 import db, { getAgents, getTasks, getTasksByStatus, recoverStuckTasks, insertTask, updateTask } from './db.js'
 import { clampToRoom, resolveObstacles, WALL } from '../src/office-plan.js'
 import { parseHook } from './live.js'
+import crypto from 'node:crypto'
+import { checkControl } from './control.js'
+import { loadProjects } from './projects.js'
+import { createSessions } from './sessions.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const app = express()
@@ -75,6 +79,9 @@ const SEATS = [
   { x: -1.6, z: -5.1 }, { x: 1.6, z: -5.1 }, { x: 0, z: -4.6 }, { x: -3.2, z: -7 }, { x: 3.2, z: -7 },
   { x: -3.4, z: -5.1 }, { x: 3.4, z: -5.1 }, { x: -1.4, z: 0.2 }, { x: 1.4, z: 0.2 }, { x: 0, z: 1.4 },
 ]
+// jam simulasi: naik tepat 50 ms tiap tick, apa pun kondisi timer. Klien memakainya (bukan waktu tiba paket)
+// untuk menginterpolasi gerak agent, jadi jitter jaringan dan timer tidak terlihat sebagai gerak patah.
+let simT = 0
 let dirty = false // ada perubahan di luar gerak (agen datang, pergi, ganti bubble) yang perlu disiarkan
 const pendingAsk = new Map() // tipe subagent → deskripsi dari sesi utama, dipakai SubagentStart berikutnya
 const liveAgents = () => [...agents.values()].filter((a) => a.live)
@@ -119,7 +126,7 @@ function liveTool(rawId, type, text) {
   dirty = true
 }
 
-function liveStop(id) {
+function liveStop(id, text = DONE) {
   const a = agents.get(id)
   if (!a || a.done) return
   a.done = true
@@ -127,7 +134,7 @@ function liveStop(id) {
   a.tx = a.x
   a.tz = a.z
   a.via = null
-  a.bubble = DONE
+  a.bubble = text
   a.leaveAt = Date.now() + LINGER_MS
   dirty = true
 }
@@ -158,7 +165,7 @@ function sayChat(m) {
 
 // daftar pemain lain untuk satu penerima: dirinya sendiri tidak ikut, jadi klien tidak perlu menyaring
 const peerList = (except) =>
-  [...peers].filter(([c]) => c !== except).map(([, q]) => ({ name: q.name, x: q.x, z: q.z, level: q.level }))
+  [...peers].filter(([c]) => c !== except).map(([, q]) => ({ name: q.name, x: q.x, z: q.z, level: q.level, ts: q.ts }))
 
 function broadcastPeers(skip = null) {
   for (const c of wss.clients) {
@@ -178,6 +185,7 @@ function uniqueName(base, self) {
 function snapshot(ws) {
   return {
     type: 'snapshot',
+    ts: simT,
     agents: [...agents.values()].map(pubAgent),
     agentsStatic: getAgents(),
     tasks: getTasks(),
@@ -208,6 +216,7 @@ wss.on('connection', (ws) => {
       p.x = +(+m.x).toFixed(2)
       p.z = +(+m.z).toFixed(2)
       p.level = m.level === 1 ? 1 : 0
+      p.ts = Date.now() // cap waktu terima: dasar interpolasi gerak pemain di klien lain
       broadcastPeers(ws)
     } else if (m.type === 'chat' || m.type === 'dm-agent') {
       // batasi spam: satu pesan per 500 ms per koneksi
@@ -345,6 +354,7 @@ function finishOutput(role, title) {
 const TICK = 50
 setInterval(() => {
   const dt = TICK / 1000
+  simT += TICK
   let posChanged = dirty
   dirty = false
 
@@ -489,7 +499,7 @@ setInterval(() => {
     }
   }
 
-  if (posChanged) broadcast({ type: 'agents', agents: [...agents.values()].map(pubAgent) })
+  if (posChanged) broadcast({ type: 'agents', ts: simT, agents: [...agents.values()].map(pubAgent) })
 }, TICK)
 
 // dispatch awal & berkala
@@ -547,6 +557,49 @@ app.get('/api/stats', (_req, res) => {
     }
   })
   res.json(agents)
+})
+
+
+// ---- sesi Claude Code yang dijalankan dari dashboard ----
+// Menjalankan `claude -p` di folder proyek terdaftar (server/projects.json). Hanya dari komputer ini, dengan
+// token acak tiap server start; pemain lain di jaringan hanya melihat karakternya. Lihat server/control.js.
+const KANTOR_TOKEN = crypto.randomBytes(16).toString('hex')
+const projects = loadProjects(process.env.KANTOR_PROJECTS ?? path.join(__dirname, 'projects.json'))
+const liveKey = (s) => `sess-${s.id}-${s.runs}`
+const sessions = createSessions({
+  projects,
+  bin: process.env.KANTOR_CLAUDE_BIN ?? 'claude',
+  hooks: {
+    onStart: (s) => { liveStart(liveKey(s), s.projectName) },
+    onTool: (s, text) => liveTool(liveKey(s), s.projectName, text),
+    onStop: (s) => liveStop(`live-${liveKey(s)}`, { done: DONE, stopped: 'Dihentikan', error: 'Gagal' }[s.state]),
+    onChange: () => broadcast({ type: 'sessions' }), // sinyal saja: isi sesi diambil lewat REST yang berpenjaga
+  },
+})
+process.on('exit', () => sessions.stopAll())
+
+const control = (needToken) => (req, res, next) => {
+  const why = checkControl(
+    { remoteAddress: req.socket.remoteAddress, host: req.headers.host, origin: req.headers.origin, token: req.headers['x-kantor-token'] },
+    KANTOR_TOKEN,
+    { needToken },
+  )
+  return why ? res.status(403).json({ error: why }) : next()
+}
+// dashboard meminta token dan daftar proyek di sini; pemain dari jaringan mendapat 403 dan panel sesi tersembunyi
+app.get('/api/control', control(false), (_req, res) => res.json({ token: KANTOR_TOKEN, projects: projects.map(({ id, name }) => ({ id, name })) }))
+app.get('/api/sessions', control(true), (_req, res) => res.json(sessions.list()))
+app.post('/api/sessions', control(true), (req, res) => {
+  const r = sessions.start({ projectId: req.body?.projectId, prompt: req.body?.prompt })
+  return r.error ? res.status(400).json(r) : res.status(201).json(r)
+})
+app.post('/api/sessions/:id/continue', control(true), (req, res) => {
+  const r = sessions.continueSession(req.params.id, req.body?.prompt)
+  return r.error ? res.status(400).json(r) : res.json(r)
+})
+app.post('/api/sessions/:id/stop', control(true), (req, res) => {
+  const r = sessions.stop(req.params.id)
+  return r.error ? res.status(400).json(r) : res.json(r)
 })
 
 const PORT = process.env.PORT || 3000

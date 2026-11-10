@@ -1,6 +1,8 @@
 // Rooftop garden ala The Sims: gumpalan taman kecil MELAYANG di atas kantor,
 // bukan atap yang menutupi. Interior selalu terlihat dari luar.
+import { memo } from 'react'
 import { Ink } from './props'
+import { Merged } from './merge'
 import { toonGradient } from './toon'
 
 // pulau taman kecil: pot rumput oval berisi tanaman
@@ -50,9 +52,9 @@ function GardenIsland({ x, z, w = 3, d = 3 }) {
   )
 }
 
-export default function Rooftop() {
+function Rooftop() {
   return (
-    <group>
+    <Merged>
       {/* 5 pulau taman melayang di sisi utara/timur/barat — sisi selatan dikosongkan
           karena kamera selalu berdiri di selatan dan melihat ke utara */}
       <GardenIsland x={-10.5} z={-10.5} w={3.4} />
@@ -60,6 +62,8 @@ export default function Rooftop() {
       <GardenIsland x={-10.5} z={2} w={3.2} />
       <GardenIsland x={10.5} z={2} w={3.2} />
       <GardenIsland x={0} z={-11.5} w={2.8} />
-    </group>
+    </Merged>
   )
 }
+
+export default memo(Rooftop)

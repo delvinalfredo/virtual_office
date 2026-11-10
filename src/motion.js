@@ -6,3 +6,6 @@ export const dampAngle = (cur, goal, rate, dt) => {
   const d = Math.atan2(Math.sin(goal - cur), Math.cos(goal - cur))
   return cur + d * (1 - Math.exp(-rate * dt))
 }
+
+// Interpolasi sudut lewat jalur terpendek, dengan k dari 0 sampai 1.
+export const lerpAngle = (a, b, k) => a + Math.atan2(Math.sin(b - a), Math.cos(b - a)) * k

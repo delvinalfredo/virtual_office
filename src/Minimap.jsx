@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { WALL, OBSTACLES, resolveObstacles, clampToRoom } from './office-plan'
+import { sample } from './interp'
 
 const SIZE = 140 // px, harus sama dengan lebar .minimap di index.css
 
@@ -12,7 +13,8 @@ export function Minimap({ playerRef, agents = [], onTeleport }) {
     const iv = setInterval(() => {
       // posisi player dibaca dari ref (hindari re-render tiap frame)
       if (playerRef?.current) setPlayer({ x: playerRef.current.x, z: playerRef.current.z })
-      setDots(agents.map((a) => ({ id: a.id, x: a.x, z: a.z, state: a.state })))
+      // posisi dari interpolasi: state React tidak lagi diperbarui tiap paket posisi
+      setDots(agents.map((a) => { const p = sample('agent', a.id) ?? a; return { id: a.id, x: p.x, z: p.z, state: a.state } }))
     }, 250)
     return () => clearInterval(iv)
   }, [agents, playerRef])

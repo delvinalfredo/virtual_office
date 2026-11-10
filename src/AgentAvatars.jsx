@@ -4,7 +4,8 @@ import { Html } from '@react-three/drei'
 import Humanoid from './Humanoid'
 import Burst from './Burst'
 import { ChatBubble } from './ChatBubble'
-import { damp, dampAngle } from './motion'
+import { dampAngle } from './motion'
+import { sample } from './interp'
 
 // Teks bubble yang berarti "pekerjaan selesai": 'Disetujui' dari lead simulasi, 'Selesai' dari agen
 // nyata (hook Claude Code). Harus sama dengan APPROVED dan DONE di server/index.js.
@@ -12,9 +13,11 @@ const DONE_BUBBLES = ['Disetujui', 'Selesai']
 
 // avatar agent: Humanoid + posisi dari server (dihaluskan). Agen simulasi bisa diklik untuk DM;
 // agen nyata (live) tidak bisa, dan tampilannya mengikuti tipe subagent, bukan id-nya.
-function AgentAvatar({ id, look, label, target, heading, state, bubble, onClick }) {
+function AgentAvatar({ id, look, label, fallback, state, bubble, onClick }) {
   const group = useRef()
   const live = look !== undefined
+  // posisi awal sekali saja (dari interpolasi bila sudah ada); sesudahnya digerakkan per frame di bawah
+  const [start] = useState(() => { const p = sample('agent', id); return [p?.x ?? fallback.x, 0, p?.z ?? fallback.z] })
   // tinggi bubble tetap per agen (dari id), tiga tingkat
   const lift = live ? [...id].reduce((n, ch) => n + ch.charCodeAt(0), 0) % 3 * 0.55 : 0
   // task selesai: konfeti di tempat agent berdiri.
@@ -28,17 +31,18 @@ function AgentAvatar({ id, look, label, target, heading, state, bubble, onClick 
 
   useFrame((_, rawDt) => {
     const g = group.current
-    if (!g) return
-    const dt = Math.min(rawDt, 0.05)
-    g.position.x = damp(g.position.x, target.x, 10, dt)
-    g.position.z = damp(g.position.z, target.z, 10, dt)
-    g.rotation.y = dampAngle(g.rotation.y, heading ?? 0, 10, dt)
+    const p = sample('agent', id)
+    if (!g || !p) return
+    // posisi hasil interpolasi: langsung dipakai, tanpa dikejar lagi (sudah halus); hanya arah hadap diperhalus
+    g.position.x = p.x
+    g.position.z = p.z
+    g.rotation.y = dampAngle(g.rotation.y, p.h, 14, Math.min(rawDt, 0.05))
   })
 
   return (
     <group
       ref={group}
-      position={[target.x, 0, target.z]}
+      position={start}
       onClick={live ? undefined : (e) => { e.stopPropagation(); onClick?.(id) }}
       onPointerOver={live ? undefined : () => { document.body.style.cursor = 'pointer' }}
       onPointerOut={live ? undefined : () => { document.body.style.cursor = 'auto' }}
@@ -60,13 +64,12 @@ export default function AgentAvatars({ agents, agentsStatic, onAgentClick }) {
   return (
     <group>
       {agentsStatic.map((s) => {
-        const rt = byId[s.id] ?? { x: s.desk_x, z: s.desk_z, state: 'idle', heading: 0 }
+        const rt = byId[s.id] ?? { state: 'idle' }
         return (
           <AgentAvatar
             key={s.id}
             id={s.id}
-            target={{ x: rt.x, z: rt.z }}
-            heading={rt.heading}
+            fallback={{ x: s.desk_x, z: s.desk_z }}
             state={rt.state}
             bubble={rt.bubble}
             onClick={onAgentClick}
@@ -79,8 +82,7 @@ export default function AgentAvatars({ agents, agentsStatic, onAgentClick }) {
           id={a.id}
           look={a.look}
           label={a.label}
-          target={{ x: a.x, z: a.z }}
-          heading={a.heading}
+          fallback={{ x: a.x, z: a.z }}
           state={a.state}
           bubble={a.bubble}
         />

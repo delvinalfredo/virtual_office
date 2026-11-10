@@ -1,10 +1,11 @@
-import { useRef, useState, useEffect } from 'react'
+import { useRef, useState, useEffect, memo } from 'react'
 import { useFrame } from '@react-three/fiber'
 import { Html } from '@react-three/drei'
 import * as THREE from 'three'
 import { toonMat, basicMat, OUTLINE_MAT } from './toon'
 import { lookFor, INK } from './looks'
 import { damp } from './motion'
+import { Merged } from './merge'
 
 // Geometri dibuat sekali dan dipakai semua karakter.
 const sphere = (r, w = 14, h = 10) => new THREE.SphereGeometry(r, w, h)
@@ -156,7 +157,7 @@ const BLINK = 0.14
 
 // Karakter chibi. Gerak dihitung dari jarak yang benar-benar ditempuh grup induknya, jadi langkah
 // selalu pas dengan kecepatan dan berhenti perlahan, di mana pun komponen ini dipasang.
-export default function Humanoid({ id = 'kamu', label, working = false, heightScale = 1 }) {
+function Humanoid({ id = 'kamu', label, working = false, heightScale = 1 }) {
   const look = lookFor(id)
   const root = useRef()
   const body = useRef()
@@ -236,28 +237,36 @@ export default function Humanoid({ id = 'kamu', label, working = false, heightSc
         {/* kaki dan sepatu, berayun dari pinggul */}
         {[-1, 1].map((sd) => (
           <group key={sd} ref={sd < 0 ? legR : legL} position={[sd * 0.13, 0.52, 0]}>
-            <Part geo={G.leg} color={look.pants} position={[0, -0.2, 0]} shadow />
-            <Part geo={G.shoe} color={look.shoes} position={[0, -0.46, 0.05]} outline={1.12} />
+            <Merged>
+              <Part geo={G.leg} color={look.pants} position={[0, -0.2, 0]} shadow />
+              <Part geo={G.shoe} color={look.shoes} position={[0, -0.46, 0.05]} outline={1.12} />
+            </Merged>
           </group>
         ))}
 
-        <Part geo={G.torso} color={look.shirt} position={[0, 0.76, 0]} scale={[1, 1, 0.86]} shadow />
-        {look.gear.includes('scarf') && (
-          <group position={[0, 1.04, 0]}>
-            <Part geo={G.scarfRing} color="#ef476f" outline={1.08} rotation={[Math.PI / 2, 0, 0]} />
-            <Part geo={G.scarfTail} color="#ef476f" outline={1.1} position={[0.1, -0.2, 0.2]} rotation={[0, 0, 0.12]} />
-          </group>
-        )}
+        <Merged>
+          <Part geo={G.torso} color={look.shirt} position={[0, 0.76, 0]} scale={[1, 1, 0.86]} shadow />
+          {look.gear.includes('scarf') && (
+            <group position={[0, 1.04, 0]}>
+              <Part geo={G.scarfRing} color="#ef476f" outline={1.08} rotation={[Math.PI / 2, 0, 0]} />
+              <Part geo={G.scarfTail} color="#ef476f" outline={1.1} position={[0.1, -0.2, 0.2]} rotation={[0, 0, 0.12]} />
+            </group>
+          )}
+        </Merged>
 
         {/* lengan berayun dari bahu */}
         {[-1, 1].map((sd) => (
           <group key={sd} ref={sd < 0 ? armR : armL} position={[sd * 0.32, 0.98, 0]}>
-            <Part geo={G.arm} color={look.shirt} position={[0, -0.17, 0]} rotation={[0, 0, sd * 0.12]} shadow />
-            <Part geo={G.hand} color={look.skin} position={[sd * 0.04, -0.38, 0]} />
+            <Merged>
+              <Part geo={G.arm} color={look.shirt} position={[0, -0.17, 0]} rotation={[0, 0, sd * 0.12]} shadow />
+              <Part geo={G.hand} color={look.skin} position={[sd * 0.04, -0.38, 0]} />
+            </Merged>
           </group>
         ))}
 
         <group ref={head} position={[0, 1.42, 0]}>
+          {/* alis dan mulut berubah bentuk saat bekerja, jadi kepala digabung ulang saat itu */}
+          <Merged version={working ? 1 : 0}>
           <Part geo={G.head} color={look.skin} scale={[1, 0.94, 0.96]} shadow />
           {[-1, 1].map((sd) => <Part key={sd} geo={G.ear} color={look.skin} outline={1.15} position={[sd * 0.4, -0.02, 0]} scale={[0.6, 1, 0.8]} />)}
 
@@ -282,6 +291,7 @@ export default function Humanoid({ id = 'kamu', label, working = false, heightSc
 
           <Hair style={look.hairStyle} color={look.hair} />
           <Gear gear={look.gear} hair={look.hair} />
+          </Merged>
         </group>
       </group>
 
@@ -293,3 +303,6 @@ export default function Humanoid({ id = 'kamu', label, working = false, heightSc
     </group>
   )
 }
+
+// props berupa teks dan angka, jadi memo mencegah render ulang tiap kali server mengirim posisi agent
+export default memo(Humanoid)

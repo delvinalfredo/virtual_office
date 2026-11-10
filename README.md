@@ -50,6 +50,16 @@ Cara manual: pasang hook di `.claude/settings.json` proyek yang ingin dipantau, 
 
 Buka `/hooks` di Claude Code atau mulai sesi baru supaya hook terbaca. Kalau server kantor mati, hook gagal tanpa menghalangi apa pun. Dari event hanya nama tool, nama file tanpa folder, dan kata pertama perintah yang dipakai. Isi file dan perintah lengkap tidak disimpan. Untuk mematikan, hapus bagian `hooks` itu.
 
+## Menjalankan Claude Code dari dashboard
+
+Tombol "Sesi Claude" di kiri atas membuka panel untuk memilih proyek, menulis tugas, dan menjalankan Claude Code di folder proyek itu. Beberapa proyek bisa berjalan bersamaan (maksimal tiga). Tiap sesi muncul sebagai karakter berlabel nama proyek di kantor, dan sebagai kartu di panel yang bisa dihentikan atau dilanjutkan.
+
+Daftarkan folder yang boleh dipakai: salin `server/projects.example.json` menjadi `server/projects.json`, isi nama dan alamat folder, lalu jalankan ulang server. File itu tidak ikut git. Izin awalnya hanya membaca dan mengedit file. Perintah shell ditolak, dan jumlah izin yang ditolak ditampilkan di kartu sesi. Tambahkan alat lain lewat `allowedTools` per proyek bila perlu.
+
+Keamanan: panel hanya muncul di komputer yang menjalankan server, memakai token acak tiap server start, dan menolak Host atau Origin non-lokal. Pemain lain di jaringan hanya melihat karakternya. Sesi memakai login Claude Code di komputer ini dan hanya boleh dimulai olehmu. Jangan membuka akses ini untuk orang lain.
+
+Ukuran FPS: tambahkan `?perf` ke alamat halaman. `?q=0` sampai `?q=3` memaksa tingkat kualitas gambar, dan `?q=0` mengembalikan kualitas penuh bila aplikasi sempat menurunkannya sendiri.
+
 ## Data
 
 Task dan daftar agent disimpan di `server/kantor.db` (SQLite, tidak ikut git). Posisi agent hanya ada di memori server. Kalau server restart, task yang sedang dikerjakan dikembalikan ke antrian.
