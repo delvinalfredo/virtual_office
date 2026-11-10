@@ -8,7 +8,7 @@ import { clampToRoom, resolveObstacles, WALL } from '../src/office-plan.js'
 import { parseHook } from './live.js'
 import crypto from 'node:crypto'
 import { checkControl } from './control.js'
-import { loadProjects } from './projects.js'
+import { loadProjects, addProject, removeProject } from './projects.js'
 import { createSessions } from './sessions.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -44,7 +44,7 @@ for (const a of getAgents()) {
   })
 }
 
-// player peers: ws → { name, want, x, z, level }  (want = nama yang diminta klien)
+// player peers: ws → { name, want, x, z }  (want = nama yang diminta klien)
 const peers = new Map()
 
 // riwayat chat di memori, dikirim ke pendatang baru lewat snapshot
@@ -165,7 +165,7 @@ function sayChat(m) {
 
 // daftar pemain lain untuk satu penerima: dirinya sendiri tidak ikut, jadi klien tidak perlu menyaring
 const peerList = (except) =>
-  [...peers].filter(([c]) => c !== except).map(([, q]) => ({ name: q.name, x: q.x, z: q.z, level: q.level, ts: q.ts }))
+  [...peers].filter(([c]) => c !== except).map(([, q]) => ({ name: q.name, x: q.x, z: q.z, ts: q.ts, ct: q.ct }))
 
 function broadcastPeers(skip = null) {
   for (const c of wss.clients) {
@@ -215,8 +215,9 @@ wss.on('connection', (ws) => {
       }
       p.x = +(+m.x).toFixed(2)
       p.z = +(+m.z).toFixed(2)
-      p.level = m.level === 1 ? 1 : 0
-      p.ts = Date.now() // cap waktu terima: dasar interpolasi gerak pemain di klien lain
+      p.ts = Date.now() // cap waktu terima: cadangan bila klien pengirim tidak mengirim ct
+      // ct: jam browser pengirim saat posisi diambil. Dibuang bila bukan angka biasa, agar tidak merusak garis waktu penerima.
+      p.ct = Number.isFinite(m.ct) && m.ct >= 0 && m.ct < 1e12 ? m.ct : undefined
       broadcastPeers(ws)
     } else if (m.type === 'chat' || m.type === 'dm-agent') {
       // batasi spam: satu pesan per 500 ms per koneksi
@@ -564,7 +565,10 @@ app.get('/api/stats', (_req, res) => {
 // Menjalankan `claude -p` di folder proyek terdaftar (server/projects.json). Hanya dari komputer ini, dengan
 // token acak tiap server start; pemain lain di jaringan hanya melihat karakternya. Lihat server/control.js.
 const KANTOR_TOKEN = crypto.randomBytes(16).toString('hex')
-const projects = loadProjects(process.env.KANTOR_PROJECTS ?? path.join(__dirname, 'projects.json'))
+const PROJECTS_FILE = process.env.KANTOR_PROJECTS ?? path.join(__dirname, 'projects.json')
+// array yang sama dipegang mesin sesi, jadi daftar diganti di tempat (splice), bukan dengan array baru
+const projects = loadProjects(PROJECTS_FILE)
+const projectList = () => projects.map(({ id, name, path: dir }) => ({ id, name, path: dir }))
 const liveKey = (s) => `sess-${s.id}-${s.runs}`
 const sessions = createSessions({
   projects,
@@ -588,6 +592,24 @@ const control = (needToken) => (req, res, next) => {
 }
 // dashboard meminta token dan daftar proyek di sini; pemain dari jaringan mendapat 403 dan panel sesi tersembunyi
 app.get('/api/control', control(false), (_req, res) => res.json({ token: KANTOR_TOKEN, projects: projects.map(({ id, name }) => ({ id, name })) }))
+// Daftar proyek bisa diubah dari dashboard dengan penjaga yang sama dengan sesi (komputer ini, Host dan Origin lokal, token).
+// Alamat folder datang dari klien, jadi addProject memeriksa bahwa itu folder lengkap yang ada; izin tool tetap bawaan.
+app.get('/api/projects', control(true), (_req, res) => res.json(projectList()))
+app.post('/api/projects', control(true), (req, res) => {
+  const r = addProject(PROJECTS_FILE, { name: req.body?.name, path: req.body?.path })
+  if (r.error) return res.status(400).json(r)
+  projects.splice(0, projects.length, ...loadProjects(PROJECTS_FILE))
+  return res.status(201).json(projectList())
+})
+app.delete('/api/projects/:id', control(true), (req, res) => {
+  if (sessions.list().some((s) => s.projectId === req.params.id && (s.state === 'running' || s.state === 'stopping'))) {
+    return res.status(400).json({ error: 'ada sesi yang masih berjalan di proyek ini, hentikan dulu' })
+  }
+  const r = removeProject(PROJECTS_FILE, req.params.id)
+  if (r.error) return res.status(400).json(r)
+  projects.splice(0, projects.length, ...loadProjects(PROJECTS_FILE))
+  return res.json(projectList())
+})
 app.get('/api/sessions', control(true), (_req, res) => res.json(sessions.list()))
 app.post('/api/sessions', control(true), (req, res) => {
   const r = sessions.start({ projectId: req.body?.projectId, prompt: req.body?.prompt })

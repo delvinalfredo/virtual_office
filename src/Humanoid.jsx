@@ -157,7 +157,7 @@ const BLINK = 0.14
 
 // Karakter chibi. Gerak dihitung dari jarak yang benar-benar ditempuh grup induknya, jadi langkah
 // selalu pas dengan kecepatan dan berhenti perlahan, di mana pun komponen ini dipasang.
-function Humanoid({ id = 'kamu', label, working = false, heightScale = 1 }) {
+function Humanoid({ id = 'kamu', label, working = false, heightScale = 1, motion = null }) {
   const look = lookFor(id)
   const root = useRef()
   const body = useRef()
@@ -183,11 +183,14 @@ function Humanoid({ id = 'kamu', label, working = false, heightScale = 1 }) {
       m.blinkAt = 1 + Math.random() * 3
       m.has = true
     }
-    const dist = Math.hypot(wp.current.x - m.px, wp.current.z - m.pz)
+    let dist = Math.hypot(wp.current.x - m.px, wp.current.z - m.pz)
     m.px = wp.current.x
     m.pz = wp.current.z
-    // lonjakan (teleport ke rooftop) bukan berjalan
-    const speed = dt > 0 && dist / dt < 14 ? dist / dt : 0
+    // lonjakan (teleport lewat minimap) bukan berjalan
+    let speed = dt > 0 && dist / dt < 14 ? dist / dt : 0
+    // pemakai yang tahu kecepatan sebenarnya (pemain lain, dari interpolasi) menyebutkannya langsung, supaya
+    // langkah kaki tidak bergantung pada selisih posisi antar frame yang ikut goyang saat paket telat
+    if (motion?.current) { speed = motion.current.speed; dist = speed * dt }
     const moving = speed > 0.35
     m.amp = damp(m.amp, moving ? Math.min(1, speed / 3) : 0, moving ? 10 : 8, dt)
     if (moving) m.phase += dist * 4.2

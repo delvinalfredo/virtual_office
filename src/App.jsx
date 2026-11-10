@@ -1,7 +1,6 @@
 import { Canvas } from '@react-three/fiber'
 import { OrbitControls } from '@react-three/drei'
 import Office from './Office'
-import Rooftop from './Rooftop'
 import SkyDeco from './SkyDeco'
 import Perf from './Perf'
 import AutoQuality from './AutoQuality'
@@ -54,7 +53,7 @@ export default function App() {
 
   const onPos = useCallback((p) => {
     playerPosRef.current = p
-    sendPos(playerName, p.x, p.z, p.level)
+    sendPos(playerName, p.x, p.z, p.t)
   }, [sendPos, playerName])
 
   const deleteTask = useCallback((id) => {
@@ -86,7 +85,6 @@ export default function App() {
         {FORCED_Q === null && <AutoQuality quality={quality} onDrop={setQuality} />}
         <SkyDeco />
         <Office />
-        <Rooftop />
         <Player onPos={onPos} teleportRef={teleportRef} />
         <AgentAvatars agents={agents} agentsStatic={agentsStatic} onAgentClick={setDmAgent} />
         <PeerAvatars peers={peers} />

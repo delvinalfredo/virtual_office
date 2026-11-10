@@ -9,8 +9,7 @@ export default defineConfig({
     // IPv4 jalan normal. `npm run dev -- --host` tetap bisa dipakai untuk akses dari jaringan.
     host: '127.0.0.1',
     proxy: {
-      // websocket kantor + REST API diarahkan ke server Node (port 3000)
-      '/ws': { target: 'ws://localhost:3000', ws: true },
+      // REST API diarahkan ke server Node (port 3000); websocket tidak lewat sini, klien langsung ke port 3000
       '/api': { target: 'http://localhost:3000', changeOrigin: true },
     },
   },

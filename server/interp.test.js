@@ -51,3 +51,39 @@ test('paket ganda atau terlambat dan nilai rusak diabaikan; tanpa data hasilnya 
   push('agent', 'x', 200, Infinity, 1)
   near(sample('agent', 'x', 100000).x, 1)
 })
+
+test('jam pengirim: jitter tiba tidak mengubah gerak, dan tiap pemain punya selisih jamnya sendiri', () => {
+  resetInterp()
+  // dua pemain dengan jam browser yang jauh berbeda; paket tiba tidak rata (jitter sampai 60 ms)
+  const jitter = [0, 55, 5, 60, 10, 40, 0, 50, 20, 60, 5, 45]
+  for (let n = 0; n < 12; n++) {
+    const recv = 1000 + n * 50 + jitter[n]
+    push('peer', 'a', 100 + n * 50, n * 0.25, 0); noteServerTime('peer', 100 + n * 50, recv, 'a') // 5 satuan per detik
+    push('peer', 'b', 900000 + n * 50, 100 - n * 0.25, 0); noteServerTime('peer', 900000 + n * 50, recv, 'b')
+  }
+  const base = 1000 - 100 // selisih terkecil pemain a (jitter 0 di n = 0)
+  let prev = null
+  for (let now = base + DELAY.peer + 150; now < base + DELAY.peer + 450; now += 1000 / 60) {
+    const p = sample('peer', 'a', now)
+    if (prev) near((p.x - prev.x) / (1 / 60), 5, 0.02)
+    near(p.v, 5, 1e-6)
+    prev = p
+  }
+})
+
+test('kecepatan jalan: nol saat menahan atau melompat jauh, dan jam mundur (muat ulang) memulai riwayat baru', () => {
+  resetInterp()
+  noteServerTime('peer', 0, 0, 'p')
+  push('peer', 'p', 0, 0, 0)
+  push('peer', 'p', 100, 0.5, 0) // 5 satuan per detik
+  push('peer', 'p', 200, 30, 0) // loncat 29,5 dalam 100 ms: teleport, bukan jalan
+  near(sample('peer', 'p', DELAY.peer + 50).v, 5)
+  near(sample('peer', 'p', DELAY.peer + 150).v, 0)
+  near(sample('peer', 'p', DELAY.peer + 9000).v, 0) // lewat paket terakhir: menahan
+  // pemain yang sama muat ulang: jam browser mulai dari nol lagi
+  noteServerTime('peer', 5000000, 5000000, 'p')
+  push('peer', 'p', 5000000, 7, 7)
+  assert.equal(push('peer', 'p', 40, 1, 1), true, 'jam mundur jauh = sesi baru, bukan paket terlambat')
+  noteServerTime('peer', 40, 9000, 'p') // useKantor mencatat jam baru tepat setelah push berhasil
+  near(sample('peer', 'p', 1e9).x, 1)
+})

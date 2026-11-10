@@ -2,8 +2,7 @@ import { useRef, useEffect, memo } from 'react'
 import { useFrame, useThree } from '@react-three/fiber'
 import * as THREE from 'three'
 import { useKeyboard } from './useKeyboard'
-import { clampToRoom, resolveObstacles, portalCheck } from './office-plan'
-import { sfx } from './sfx'
+import { clampToRoom, resolveObstacles } from './office-plan'
 import { damp, dampAngle } from './motion'
 import Humanoid from './Humanoid'
 
@@ -27,7 +26,7 @@ function PlayerBase({ onPos = null, teleportRef = null }) {
     camera.position.set(pos.current.x, 6, pos.current.z + 9)
   }, [camera])
 
-  // teleport callback untuk minimap/portal
+  // teleport callback untuk minimap
   useEffect(() => {
     if (teleportRef) {
       teleportRef.current = ({ x, z }) => {
@@ -39,7 +38,6 @@ function PlayerBase({ onPos = null, teleportRef = null }) {
     }
   }, [camera, teleportRef])
 
-  const level = useRef(0) // 0 = lantai, 1 = rooftop
   const zoom = useRef(9) // jarak kamera dgn scroll
   const yaw = useRef(0) // arah pandang kamera (rad); Q/E rotasi
 
@@ -74,39 +72,33 @@ function PlayerBase({ onPos = null, teleportRef = null }) {
     pos.current.z += vel.current.z * dt
 
     clampToRoom(pos.current)
-    resolveObstacles(pos.current, 0.45, level.current)
-    const newLevel = portalCheck(pos.current, level.current)
-    if (newLevel != null) {
-      level.current = newLevel
-      vel.current.x = 0
-      vel.current.z = 0
-      group.current.position.copy(pos.current)
-      camera.position.set(pos.current.x, 6 + (newLevel ? 3 : 0), pos.current.z + 9)
-      sfx.pop()
-    }
+    resolveObstacles(pos.current, 0.45)
 
     // hadap arah gerak; diam: tetap di arah terakhir
     if (Math.hypot(vel.current.x, vel.current.z) > 0.4) {
       group.current.rotation.y = dampAngle(group.current.rotation.y, Math.atan2(vel.current.x, vel.current.z), 14, dt)
     }
-    const y = level.current === 1 ? 3.18 : 0
-    group.current.position.set(pos.current.x, y, pos.current.z)
+    group.current.position.set(pos.current.x, 0, pos.current.z)
     const z = zoom.current
-    const camY = z * 0.66 + (level.current === 1 ? 3 : 0)
+    const camY = z * 0.66
     camera.position.lerp(
       new THREE.Vector3(pos.current.x + Math.sin(yaw.current) * z, camY, pos.current.z + Math.cos(yaw.current) * z),
       1 - Math.pow(0.001, dt)
     )
-    camera.lookAt(pos.current.x, y + 1, pos.current.z)
+    camera.lookAt(pos.current.x, 1, pos.current.z)
   })
 
-  // simpan posisi + kirim ke server tiap 100 ms: cukup rapat supaya pemain lain melihat gerak yang mulus
+  // kirim posisi ke server tiap 50 ms. Posisi dan cap waktunya diambil di saat yang sama, jadi timer yang
+  // telat (frame berat) hanya membuat paket lebih jarang, tidak membuat gerak di layar orang lain miring.
   useEffect(() => {
+    let n = 0
     const iv = setInterval(() => {
-      const p = { x: pos.current.x, z: pos.current.z, level: level.current }
-      try { localStorage.setItem('kantor-pos', JSON.stringify(p)) } catch { /* abaikan */ }
+      const p = { x: pos.current.x, z: pos.current.z, t: performance.now() }
+      if (n++ % 10 === 0) {
+        try { localStorage.setItem('kantor-pos', JSON.stringify({ x: p.x, z: p.z })) } catch { /* abaikan */ }
+      }
       onPos?.(p)
-    }, 100)
+    }, 50)
     return () => clearInterval(iv)
   }, [onPos])
 

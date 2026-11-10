@@ -9,7 +9,10 @@ export function Sessions({ tick }) {
   const [open, setOpen] = useState(false)
   const [list, setList] = useState(null)
   const [error, setError] = useState('')
+  const [projects, setProjects] = useState([]) // { id, name, path }; diubah lewat form "Kelola proyek"
   const [projectId, setProjectId] = useState('')
+  const [pname, setPname] = useState('')
+  const [ppath, setPpath] = useState('')
   const [prompt, setPrompt] = useState('')
   const [busy, setBusy] = useState(false)
   const [cont, setCont] = useState(null) // { id, text }
@@ -36,6 +39,14 @@ export function Sessions({ tick }) {
       .catch(() => setError('Server tidak menjawab atau menolak permintaan.'))
   }, [token, call])
 
+  useEffect(() => {
+    if (!token) return
+    call('GET', '/api/projects')
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('ditolak'))))
+      .then(setProjects)
+      .catch(() => setError('Daftar proyek tidak bisa dimuat.'))
+  }, [token, call])
+
   // muat saat panel dibuka dan tiap server memberi sinyal bahwa sesi berubah
   useEffect(() => { if (open) load() }, [open, tick, load])
 
@@ -55,6 +66,31 @@ export function Sessions({ tick }) {
     } finally {
       setBusy(false)
     }
+  }
+
+  // tambah atau hapus proyek: server menjawab dengan daftar terbaru, jadi pilihan di form tugas ikut diperbarui
+  const changeProjects = async (method, url, body) => {
+    setBusy(true)
+    try {
+      const r = await call(method, url, body)
+      const j = await r.json().catch(() => ({}))
+      if (!r.ok) { setError(j.error ?? 'Permintaan gagal'); return false }
+      setError('')
+      setProjects(j)
+      setProjectId((cur) => (j.some((p) => p.id === cur) ? cur : (j[0]?.id ?? '')))
+      return true
+    } catch {
+      setError('Server tidak terjangkau')
+      return false
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const addProject = async (e) => {
+    e.preventDefault()
+    if (!pname.trim() || !ppath.trim() || busy) return
+    if (await changeProjects('POST', '/api/projects', { name: pname, path: ppath })) { setPname(''); setPpath('') }
   }
 
   const start = async (e) => {
@@ -79,15 +115,55 @@ export function Sessions({ tick }) {
       {open && (
         <section className="sessions panel" aria-label="Sesi Claude Code">
           <h2>Sesi Claude Code</h2>
-          {ctl.projects.length === 0 ? (
-            <p className="empty">
-              Belum ada proyek terdaftar. Salin server/projects.example.json menjadi server/projects.json, isi alamat folder proyekmu,
-              lalu jalankan ulang server.
+          <details className="pmanage" open={projects.length === 0}>
+            <summary>Kelola proyek</summary>
+            {projects.length === 0 ? (
+              <p className="empty">Belum ada proyek. Isi nama dan alamat lengkap foldernya.</p>
+            ) : (
+              <ul className="plist">
+                {projects.map((p) => (
+                  <li key={p.id} className="prow">
+                    <span>{p.name}<small>{p.path}</small></span>
+                    <button
+                      type="button"
+                      className="btn sm"
+                      disabled={busy}
+                      aria-label={`Hapus proyek ${p.name} dari daftar`}
+                      onClick={() => changeProjects('DELETE', `/api/projects/${encodeURIComponent(p.id)}`)}
+                    >
+                      Hapus
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <form className="sform" onSubmit={addProject}>
+              <input
+                className="field"
+                value={pname}
+                maxLength={40}
+                onChange={(e) => setPname(e.target.value)}
+                placeholder="Nama proyek"
+                aria-label="Nama proyek"
+              />
+              <input
+                className="field"
+                value={ppath}
+                maxLength={500}
+                onChange={(e) => setPpath(e.target.value)}
+                placeholder="Alamat folder, misalnya D:/Kodingan/proyek-satu"
+                aria-label="Alamat folder"
+              />
+              <button type="submit" className="btn sm" disabled={busy || !pname.trim() || !ppath.trim()}>Tambah proyek</button>
+            </form>
+            <p className="note">
+              Claude hanya boleh membaca dan mengedit file di folder ini, tanpa perintah shell. Hapus hanya mencabut dari daftar, foldernya tetap ada.
             </p>
-          ) : (
+          </details>
+          {projects.length > 0 && (
             <form className="sform" onSubmit={start}>
               <select className="field" value={projectId} onChange={(e) => setProjectId(e.target.value)} aria-label="Proyek">
-                {ctl.projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
               </select>
               <textarea
                 className="field"

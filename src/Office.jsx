@@ -394,15 +394,6 @@ function Office() {
       <Sofa x={-8} z={10.5} />
       <Sofa x={-10.6} z={7} rot={Math.PI / 2} />
       <Pingpong x={-6.5} z={6} />
-
-      {/* PORTAL: pintu bercahaya di tengah dinding depan menuju rooftop garden */}
-      <group position={[0, 0, WALL - 0.5]}>
-        <Box size={[1.6, 2.4, 0.15]} pos={[0, 1.2, 0]} color="#8e44ad" />
-        <mesh position={[0, 1.2, 0.09]}>
-          <boxGeometry args={[1.2, 2, 0.02]} />
-          <meshToonMaterial color="#bf8bff" emissive="#8e44ad" emissiveIntensity={0.9} />
-        </mesh>
-      </group>
     </Merged>
   )
 }

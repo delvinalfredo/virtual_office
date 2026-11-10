@@ -6,7 +6,7 @@ import { noteServerTime, push, resetInterp } from './interp'
 // dibaca per frame oleh karakternya. State React hanya berubah bila hal yang tampak berbeda (status, bubble,
 // siapa yang ada), jadi aplikasi tidak dirender ulang 20 kali per detik.
 const agentSig = (list) => list.map((a) => `${a.id}|${a.state}|${a.bubble ?? ''}|${a.label ?? ''}|${a.live ? 1 : 0}`).join('\n')
-const peerSig = (list) => list.map((p) => `${p.name}|${p.level}`).join('\n')
+const peerSig = (list) => list.map((p) => p.name).join('\n')
 // Server lama belum mengirim cap waktu: pakai waktu tiba paket sebagai gantinya, supaya karakter tidak membeku.
 function ingestAgents(list, ts) {
   const now = performance.now()
@@ -17,8 +17,11 @@ function ingestAgents(list, ts) {
 function ingestPeers(list) {
   const now = performance.now()
   for (const p of list) {
-    const stamp = Number.isFinite(p.ts) ? p.ts : now
-    if (push('peer', p.name, stamp, p.x, p.z, 0, p.level)) noteServerTime('peer', stamp, now)
+    // jam pengirim (ct) dipakai bila ada: posisi dan waktunya diambil pada saat yang sama di browser pengirim,
+    // jadi jitter jaringan dan server tidak ikut membentuk gerak. Tanpa ct, pakai cap waktu terima server.
+    const own = Number.isFinite(p.ct)
+    const stamp = own ? p.ct : Number.isFinite(p.ts) ? p.ts : now
+    if (push('peer', p.name, stamp, p.x, p.z)) noteServerTime('peer', stamp, now, own ? p.name : '*')
   }
 }
 
@@ -44,7 +47,10 @@ export function useKantor() {
     let retryTimer
 
     const connect = () => {
-      const ws = new WebSocket(`${proto}://${location.host}/ws`)
+      // dev: langsung ke backend (port 3000), tanpa proxy Vite; proxy ws Vite menambah satu lompatan dan
+      // melaporkan "write ECONNABORTED" tiap tab ditutup. Produksi: Express yang menyajikan halaman sama dengan ws.
+      const host = import.meta.env.DEV ? `${location.hostname}:3000` : location.host
+      const ws = new WebSocket(`${proto}://${host}/ws`)
       wsRef.current = ws
       ws.onopen = () => {
         attempt = 0
@@ -123,9 +129,10 @@ export function useKantor() {
     }
   }, [])
 
-  const sendPos = useCallback((name, x, z, level = 0) => {
+  // t: jam browser ini saat posisi diambil (performance.now), dikirim apa adanya sebagai ct
+  const sendPos = useCallback((name, x, z, t = performance.now()) => {
     if (wsRef.current?.readyState === 1) {
-      wsRef.current.send(JSON.stringify({ type: 'player-pos', name, x, z, level }))
+      wsRef.current.send(JSON.stringify({ type: 'player-pos', name, x, z, ct: +t.toFixed(1) }))
     }
   }, [])
 
