@@ -3,7 +3,8 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const db = new Database(path.join(__dirname, 'kantor.db'))
+// KANTOR_DB=:memory: dipakai test supaya tidak menyentuh kantor.db asli
+const db = new Database(process.env.KANTOR_DB ?? path.join(__dirname, 'kantor.db'))
 db.pragma('journal_mode = WAL')
 
 db.exec(`
@@ -41,6 +42,22 @@ if (n === 0) {
 export const getAgents = () => db.prepare('SELECT * FROM agents').all()
 export const getTasks = () =>
   db.prepare('SELECT * FROM tasks ORDER BY id DESC').all()
+
+// antrian: yang paling lama menunggu duluan (getTasks sengaja DESC untuk tampilan board)
+export const getTasksByStatus = (status) =>
+  db.prepare('SELECT * FROM tasks WHERE status=? ORDER BY id ASC').all(status)
+
+// state agent hanya di memori, jadi sesudah restart task in_progress tidak ada yang mengerjakan.
+// review milik lead balik ke antrian review, sisanya balik ke todo.
+export const recoverStuckTasks = () => {
+  const review = db.prepare(
+    "UPDATE tasks SET status='review', progress=est WHERE status='in_progress' AND agent_id='lead'"
+  ).run().changes
+  const todo = db.prepare(
+    "UPDATE tasks SET status='todo', agent_id=NULL, progress=0 WHERE status='in_progress'"
+  ).run().changes
+  return { review, todo }
+}
 
 export const insertTask = (title, est) =>
   db.prepare('INSERT INTO tasks (title, est) VALUES (?,?)').run(title, est)

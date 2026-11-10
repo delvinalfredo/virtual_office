@@ -2,28 +2,45 @@ import { Canvas } from '@react-three/fiber'
 import { OrbitControls } from '@react-three/drei'
 import Office from './Office'
 import Rooftop from './Rooftop'
+import SkyDeco from './SkyDeco'
 import { Player } from './Avatar'
 import AgentAvatars from './AgentAvatars'
 import PeerAvatars from './PeerAvatars'
 import { Board, TaskForm } from './Board'
 import { Minimap } from './Minimap'
-import { ChatUI, ChatHint } from './ChatUI'
+import { ChatUI } from './ChatUI'
 import { AgentDM } from './AgentDM'
 import { useKantor } from './useKantor'
 import { useState, useRef, useCallback } from 'react'
-import { useKeyboard } from './useKeyboard'
+import { SKY_FOG, GROUND_BOUNCE } from './theme3d'
 
 export default function App() {
   const [cameraMode, setCameraMode] = useState('follow')
-  const { agents, agentsStatic, tasks, peers, chat, addTask, sendPos, sendChat } = useKantor()
+  const { agents, agentsStatic, tasks, peers, chat, online, addTask, sendPos, sendChat } = useKantor()
   const [dmAgent, setDmAgent] = useState(null)
-  const playerName = useRef(`kamu-${Math.floor(Math.random() * 900 + 100)}`).current
+  // nama tersimpan di browser; kalau belum ada, acak sekali lalu diingat
+  const [playerName, setPlayerName] = useState(() => {
+    try {
+      const saved = localStorage.getItem('kantor-name')
+      if (saved) return saved
+    } catch { /* localStorage diblokir: pakai nama acak saja */ }
+    return `kamu-${Math.floor(Math.random() * 900 + 100)}`
+  })
+  const [nameDraft, setNameDraft] = useState(playerName)
   const teleportRef = useRef(null)
   const playerPosRef = useRef({ x: 0, z: 6 })
 
+  const commitName = () => {
+    const next = nameDraft.trim().slice(0, 24)
+    if (!next) return setNameDraft(playerName) // kosong: batalkan, jangan kirim nama kosong
+    setNameDraft(next)
+    setPlayerName(next)
+    try { localStorage.setItem('kantor-name', next) } catch { /* abaikan */ }
+  }
+
   const onPos = useCallback((p) => {
     playerPosRef.current = p
-    sendPos(playerName, p.x, p.z)
+    sendPos(playerName, p.x, p.z, p.level)
   }, [sendPos, playerName])
 
   const deleteTask = useCallback((id) => {
@@ -31,14 +48,18 @@ export default function App() {
   }, [])
 
   return (
-    <div style={{ width: '100vw', height: '100vh', background: '#8ec9f5' }}>
-      <Canvas shadows camera={{ position: [0, 10, 14], fov: 50 }}>
-        <color attach="background" args={['#8ec9f5']} />
-        <fog attach="fog" args={['#8ec9f5', 40, 90]} />
-        <hemisphereLight args={['#ffffff', '#7ec850', 0.7]} />
+    <div className="stage">
+      <Canvas
+        shadows
+        camera={{ position: [0, 10, 14], fov: 50 }}
+        gl={{ alpha: true, antialias: true }}
+        onCreated={({ gl }) => gl.setClearColor(0x000000, 0)}
+      >
+        <fog attach="fog" args={[SKY_FOG, 40, 95]} />
+        <hemisphereLight args={['#ffffff', GROUND_BOUNCE, 0.75]} />
         <directionalLight
           position={[15, 25, 10]}
-          intensity={1.6}
+          intensity={1.5}
           castShadow
           shadow-mapSize={[2048, 2048]}
           shadow-camera-left={-20}
@@ -46,17 +67,17 @@ export default function App() {
           shadow-camera-top={20}
           shadow-camera-bottom={-20}
         />
+        <SkyDeco />
         <Office />
         <Rooftop />
         <Player onPos={onPos} teleportRef={teleportRef} />
         <AgentAvatars agents={agents} agentsStatic={agentsStatic} onAgentClick={setDmAgent} />
-        <PeerAvatars peers={peers.filter((p) => p.name !== playerName)} />
+        <PeerAvatars peers={peers} />
         {cameraMode === 'orbit' && <OrbitControls />}
       </Canvas>
 
       <Board tasks={tasks} onDelete={deleteTask} />
       <ChatUI chat={chat} onSend={(t) => sendChat(t)} />
-      <ChatHint />
       {dmAgent && (
         <AgentDM
           agentId={dmAgent}
@@ -71,16 +92,32 @@ export default function App() {
       />
       <TaskForm onAdd={addTask} />
 
-      <div style={{ position: 'fixed', bottom: 16, left: 16, color: '#fff', fontFamily: 'sans-serif', fontSize: 14 }}>
-        WASD / panah = jalan &nbsp;|&nbsp;
-        <label style={{ cursor: 'pointer' }}>
+      {!online && (
+        <div role="status" className="status panel">
+          Koneksi ke server putus. Mencoba tersambung lagi.
+        </div>
+      )}
+
+      <div className="dock panel">
+        <label>
+          Nama
+          <input
+            className="field"
+            value={nameDraft}
+            maxLength={24}
+            onChange={(e) => setNameDraft(e.target.value)}
+            onBlur={commitName}
+            onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }}
+          />
+        </label>
+        <span>WASD atau panah untuk jalan, Q/E untuk memutar</span>
+        <label>
           <input
             type="checkbox"
-            style={{ verticalAlign: 'middle' }}
             checked={cameraMode === 'orbit'}
             onChange={(e) => setCameraMode(e.target.checked ? 'orbit' : 'follow')}
           />
-          {' '}camera bebas (orbit)
+          Kamera bebas
         </label>
       </div>
     </div>

@@ -1,11 +1,18 @@
-import { useState } from 'react'
-import { ROLES } from './Avatar'
+import { useState, useEffect } from 'react'
+import { lookFor } from './looks'
 
 // Modal DM ke agent: muncul saat klik avatar agent di 3D
+const QUICK = ['Ada update?', 'Prioritas task ini', 'Terima kasih!', 'BTW makan siang?']
+
 export function AgentDM({ agentId, onClose, onSend }) {
-  const role = ROLES[agentId] ?? ROLES.programmer
+  const look = lookFor(agentId)
   const [text, setText] = useState('')
-  const quick = ['Ada update?', 'Prioritas task ini', 'Terima kasih!', 'BTW makan siang?']
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
 
   const send = (t) => {
     if (!t.trim()) return
@@ -14,59 +21,31 @@ export function AgentDM({ agentId, onClose, onSend }) {
   }
 
   return (
-    <div
-      onClick={onClose}
-      style={{
-        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 40,
-        display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'sans-serif',
-      }}
-    >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        style={{
-          width: 320, background: '#141820', borderRadius: 14, padding: 16, color: '#fff',
-          border: '1px solid rgba(255,255,255,0.15)',
-        }}
-      >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
-          <div style={{
-            width: 38, height: 38, borderRadius: '50%', background: role.body,
-            display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700,
-          }}>
-            {agentId[0].toUpperCase()}
-          </div>
+    <div className="backdrop" onClick={onClose}>
+      <div className="dialog panel" role="dialog" aria-modal="true" aria-label={`Pesan ke ${agentId}`} onClick={(e) => e.stopPropagation()}>
+        <div className="who-head">
+          <div className="badge" style={{ '--tag': look.tag }}>{agentId[0].toUpperCase()}</div>
           <div>
-            <div style={{ fontWeight: 700 }}>{agentId}</div>
-            <div style={{ fontSize: 11, opacity: 0.6 }}>{role.label}</div>
+            <b>{agentId}</b>
+            <small>{look.label}</small>
           </div>
         </div>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 12 }}>
-          {quick.map((q) => (
-            <button key={q} onClick={() => send(q)} style={{
-              padding: '6px 10px', borderRadius: 16, border: '1px solid rgba(255,255,255,0.25)',
-              background: 'rgba(255,255,255,0.08)', color: '#fff', fontSize: 11, cursor: 'pointer',
-            }}>
-              {q}
-            </button>
+        <div className="quick">
+          {QUICK.map((q) => (
+            <button key={q} className="btn sm" onClick={() => send(q)}>{q}</button>
           ))}
         </div>
-        <form onSubmit={(e) => { e.preventDefault(); send(text) }} style={{ display: 'flex', gap: 6 }}>
+        <form className="dm" onSubmit={(e) => { e.preventDefault(); send(text) }}>
           <input
             autoFocus
+            className="field"
             value={text}
             onChange={(e) => setText(e.target.value)}
-            placeholder={`ketik ke ${agentId}...`}
-            style={{
-              flex: 1, padding: '8px 10px', borderRadius: 8, fontSize: 12,
-              border: '1px solid #444', background: 'rgba(255,255,255,0.06)', color: '#fff', outline: 'none',
-            }}
+            placeholder={`Ketik ke ${agentId}`}
+            aria-label={`Pesan ke ${agentId}`}
+            maxLength={120}
           />
-          <button type="submit" style={{
-            padding: '8px 14px', borderRadius: 8, border: 'none', background: '#2ecc71',
-            color: '#fff', fontWeight: 700, cursor: 'pointer',
-          }}>
-            ➤
-          </button>
+          <button type="submit" className="btn go">Kirim</button>
         </form>
       </div>
     </div>

@@ -12,6 +12,8 @@ export function useKeyboard() {
       return MAP[k] ?? k
     }
     const kd = (e) => {
+      // sedang mengetik di kolom isian: huruf tidak boleh menggerakkan avatar
+      if (e.target instanceof HTMLElement && e.target.closest('input, textarea, select, [contenteditable]')) return
       const k = norm(e)
       if ('wasdqe'.includes(k) && k) keys.add(k)
     }

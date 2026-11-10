@@ -1,37 +1,26 @@
-import { useRef, useState } from 'react'
+import { useRef } from 'react'
 import { useFrame } from '@react-three/fiber'
-import { Text, Billboard } from '@react-three/drei'
 import Humanoid from './Humanoid'
+import { damp, dampAngle } from './motion'
 
-// avatar pemain lain: humanoid abu dengan nama tamu; walk = bergerak (delta)
+// avatar pemain lain: mengikuti posisi dari server (dihaluskan); langkah kaki dihitung Humanoid dari gerakannya
 function Peer({ name, target }) {
   const group = useRef()
-  const [walking, setWalking] = useState(false)
-  useFrame((_, dt) => {
-    if (!group.current) return
-    const dx = (target.x ?? 0) - group.current.position.x
-    const dz = (target.z ?? 0) - group.current.position.z
-    group.current.position.x += dx * Math.min(1, dt * 8)
-    group.current.position.z += dz * Math.min(1, dt * 8)
-    // bergerak kalau masih jauh dari target (server update 250ms → lag kecil normal)
-    const moving = Math.hypot(dx, dz) > 0.15
-    if (moving !== walking.current) setWalking(moving)
-    if (moving) {
-      let tRot = Math.atan2(dx, dz)
-      let d = tRot - group.current.rotation.y
-      if (d > Math.PI) d -= Math.PI * 2
-      if (d < -Math.PI) d += Math.PI * 2
-      group.current.rotation.y += d * Math.min(1, dt * 10)
-    }
+  useFrame((_, rawDt) => {
+    const g = group.current
+    if (!g) return
+    const dt = Math.min(rawDt, 0.05)
+    const dx = target.x - g.position.x
+    const dz = target.z - g.position.z
+    g.position.x = damp(g.position.x, target.x, 10, dt)
+    g.position.z = damp(g.position.z, target.z, 10, dt)
+    // rooftop ada di y 3,18 (sama dengan Player), jadi pemain di atas tidak terlihat jalan di lantai bawah
+    g.position.y = damp(g.position.y, target.level === 1 ? 3.18 : 0, 8, dt)
+    if (Math.hypot(dx, dz) > 0.12) g.rotation.y = dampAngle(g.rotation.y, Math.atan2(dx, dz), 10, dt)
   })
   return (
-    <group ref={group} position={[target.x ?? 0, 0, target.z ?? 0]}>
-      <Humanoid id={name} walk={walking.current} />
-      <Billboard position={[0, 2.5, 0]}>
-        <Text fontSize={0.2} color="#aef" anchorX="center" outlineWidth={0.025} outlineColor="#000">
-          {name}
-        </Text>
-      </Billboard>
+    <group ref={group} position={[target.x ?? 0, target.level === 1 ? 3.18 : 0, target.z ?? 0]}>
+      <Humanoid id={name} />
     </group>
   )
 }
@@ -40,7 +29,7 @@ export default function PeerAvatars({ peers }) {
   return (
     <group>
       {peers.map((p) => (
-        <Peer key={p.name} name={p.name} target={{ x: p.x, z: p.z }} />
+        <Peer key={p.name} name={p.name} target={{ x: p.x, z: p.z, level: p.level }} />
       ))}
     </group>
   )

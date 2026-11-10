@@ -7,6 +7,7 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
+# Node / build
 node_modules
 dist
 dist-ssr
@@ -16,15 +17,44 @@ dist-ssr
 .vscode/*
 !.vscode/extensions.json
 .idea
-.DS_Store
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
 *.sw?
 
+# OS noise
+.DS_Store
+Thumbs.db
+desktop.ini
+
 # runtime data lokal
 server/kantor.db
 server/kantor.db-wal
 server/kantor.db-shm
 workspace/
+
+# Claude Code local state and machine-specific files
+.claude/settings.local.json
+CLAUDE.local.md
+docs/plans/*.local.md
+.claude/*.db
+.claude/logs/
+
+# docs/PROJECT.md and docs/plans/ are project state: commit them in a target
+# project.
+
+# Python bytecode (skill scripts are stdlib-only; never ship caches)
+__pycache__/
+*.pyc
+*.pyo
+
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+*.key
+secrets.*
+
+# Generated skill output
+.claude/skills/**/.env

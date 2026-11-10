@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { WALL, OBSTACLES, resolveObstacles, clampToRoom } from './office-plan'
 
-const SIZE = 140 // px
+const SIZE = 140 // px, harus sama dengan lebar .minimap di index.css
 
 // minimap 2D kanan-bawah: klik untuk teleport player
 export function Minimap({ playerRef, agents = [], onTeleport }) {
@@ -31,40 +31,17 @@ export function Minimap({ playerRef, agents = [], onTeleport }) {
   }
 
   return (
-    <div
-      onClick={click}
-      title="klik untuk teleport"
-      style={{
-        position: 'fixed', bottom: 70, right: 16, width: SIZE, height: SIZE,
-        background: 'rgba(20,24,32,0.8)', borderRadius: 10, cursor: 'crosshair',
-        border: '1px solid rgba(255,255,255,0.15)', zIndex: 20, overflow: 'hidden',
-      }}
-    >
-      {/* meja */}
+    <div className="minimap panel" onClick={click} title="Klik untuk teleport" role="img" aria-label="Peta kantor, klik untuk pindah">
       {OBSTACLES.map(([cx, cz, hw, hz], i) => (
-        <div key={i} style={{
-          position: 'absolute',
+        <div key={i} className="o" style={{
           left: toPx(cx - hw), top: toPx(cz - hz),
           width: toPx(cx + hw) - toPx(cx - hw), height: toPx(cz + hz) - toPx(cz - hz),
-          background: 'rgba(200,160,106,0.7)', borderRadius: 2,
         }} />
       ))}
-      {/* agent */}
       {dots.map((d) => (
-        <div key={d.id} title={d.id} style={{
-          position: 'absolute',
-          left: toPx(d.x) - 3, top: toPx(d.z) - 3,
-          width: 6, height: 6, borderRadius: '50%',
-          background: d.state === 'working' ? '#2ecc71' : d.state === 'walking' ? '#f39c12' : '#95a5a6',
-        }} />
+        <div key={d.id} className={`dot ${d.state}`} title={d.id} style={{ left: toPx(d.x), top: toPx(d.z) }} />
       ))}
-      {/* kamu */}
-      <div style={{
-        position: 'absolute',
-        left: toPx(player.x) - 4, top: toPx(player.z) - 4,
-        width: 8, height: 8, borderRadius: '50%',
-        background: '#e67e22', border: '1px solid #fff',
-      }} />
+      <div className="dot me" style={{ left: toPx(player.x), top: toPx(player.z) }} />
     </div>
   )
 }

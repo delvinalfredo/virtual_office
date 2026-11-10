@@ -1,19 +1,13 @@
-const WALL = 12
+import { Box, Ink } from './props'
+import { toonGradient } from './toon'
 
-function Box({ size, pos, color, ...props }) {
-  return (
-    <mesh position={pos} castShadow receiveShadow {...props}>
-      <boxGeometry args={size} />
-      <meshToonMaterial color={color} />
-    </mesh>
-  )
-}
+const WALL = 12
 
 function Rug({ pos, size, color }) {
   return (
     <mesh position={[pos[0], 0.055, pos[2]]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
       <planeGeometry args={size} />
-      <meshToonMaterial color={color} />
+      <meshToonMaterial color={color} gradientMap={toonGradient()} />
     </mesh>
   )
 }
@@ -25,19 +19,23 @@ function CartoonTree({ x, z, scale = 1 }) {
     <group position={[x, 0, z]} scale={scale}>
       <mesh position={[0, 0.9, 0]} castShadow>
         <cylinderGeometry args={[0.18, 0.28, 1.8, 8]} />
-        <meshToonMaterial color="#8a5a33" />
+        <meshToonMaterial color="#8a5a33" gradientMap={toonGradient()} />
+        <Ink />
       </mesh>
       <mesh position={[0, 2.3, 0]} castShadow>
         <dodecahedronGeometry args={[1.1, 0]} />
-        <meshToonMaterial color="#3faa4e" />
+        <meshToonMaterial color="#3faa4e" gradientMap={toonGradient()} />
+        <Ink />
       </mesh>
       <mesh position={[0.6, 2.9, 0.3]} castShadow>
         <dodecahedronGeometry args={[0.6, 0]} />
-        <meshToonMaterial color="#4fc361" />
+        <meshToonMaterial color="#4fc361" gradientMap={toonGradient()} />
+        <Ink />
       </mesh>
       <mesh position={[-0.5, 3.1, -0.2]} castShadow>
         <dodecahedronGeometry args={[0.5, 0]} />
-        <meshToonMaterial color="#35944a" />
+        <meshToonMaterial color="#35944a" gradientMap={toonGradient()} />
+        <Ink />
       </mesh>
     </group>
   )
@@ -49,7 +47,8 @@ function Bush({ x, z }) {
     <group position={[x, 0, z]}>
       <mesh position={[0, 0.3, 0]} castShadow scale={[1, 0.75, 1]}>
         <dodecahedronGeometry args={[0.42, 0]} />
-        <meshToonMaterial color="#43b052" />
+        <meshToonMaterial color="#43b052" gradientMap={toonGradient()} />
+        <Ink />
       </mesh>
     </group>
   )
@@ -61,11 +60,13 @@ function StreetLamp({ x, z }) {
     <group position={[x, 0, z]}>
       <mesh position={[0, 1.6, 0]} castShadow>
         <cylinderGeometry args={[0.06, 0.09, 3.2, 8]} />
-        <meshToonMaterial color="#37474f" />
+        <meshToonMaterial color="#37474f" gradientMap={toonGradient()} />
+        <Ink />
       </mesh>
       <mesh position={[0, 3.3, 0.35]} castShadow>
         <boxGeometry args={[0.5, 0.12, 0.32]} />
-        <meshToonMaterial color="#37474f" />
+        <meshToonMaterial color="#37474f" gradientMap={toonGradient()} />
+        <Ink />
       </mesh>
       <mesh position={[0, 3.22, 0.35]}>
         <boxGeometry args={[0.36, 0.05, 0.22]} />
@@ -98,26 +99,6 @@ function Arcade({ x, z, rot = 0 }) {
       <Box size={[0.55, 0.4, 0.05]} pos={[0, 1.35, 0.36]} color="#80deea" />
       <Box size={[0.6, 0.12, 0.4]} pos={[0, 1.05, 0.35]} color="#4a148c" />
       <Box size={[0.5, 0.06, 0.4]} pos={[0, 1.72, 0.2]} color="#4a148c" />
-    </group>
-  )
-}
-
-// awan low poly melayang di langit
-function Cloud({ x, y, z, s = 1 }) {
-  return (
-    <group position={[x, y, z]} scale={s}>
-      <mesh>
-        <dodecahedronGeometry args={[0.9, 0]} />
-        <meshToonMaterial color="#ffffff" />
-      </mesh>
-      <mesh position={[0.9, -0.15, 0]}>
-        <dodecahedronGeometry args={[0.65, 0]} />
-        <meshToonMaterial color="#f7fbff" />
-      </mesh>
-      <mesh position={[-0.8, -0.1, 0.2]}>
-        <dodecahedronGeometry args={[0.6, 0]} />
-        <meshToonMaterial color="#f7fbff" />
-      </mesh>
     </group>
   )
 }
@@ -227,7 +208,8 @@ function Pingpong({ x, z }) {
       {/* net & bola */}
       <mesh position={[0.4, 0.9, 0.1]}>
         <sphereGeometry args={[0.06, 10, 10]} />
-        <meshToonMaterial color="#fdfdfd" />
+        <meshToonMaterial color="#fdfdfd" gradientMap={toonGradient()} />
+        <Ink />
       </mesh>
     </group>
   )
@@ -238,15 +220,18 @@ function Plant({ x, z, scale = 1 }) {
     <group position={[x, 0, z]} scale={scale}>
       <mesh position={[0, 0.25, 0]} castShadow>
         <cylinderGeometry args={[0.28, 0.22, 0.5, 16]} />
-        <meshToonMaterial color="#b5651d" />
+        <meshToonMaterial color="#b5651d" gradientMap={toonGradient()} />
+        <Ink />
       </mesh>
       <mesh position={[0, 0.85, 0]} castShadow>
         <dodecahedronGeometry args={[0.42, 0]} />
-        <meshToonMaterial color="#27ae60" />
+        <meshToonMaterial color="#27ae60" gradientMap={toonGradient()} />
+        <Ink />
       </mesh>
       <mesh position={[0.18, 1.15, 0]} castShadow>
         <dodecahedronGeometry args={[0.22, 0]} />
-        <meshToonMaterial color="#2ecc71" />
+        <meshToonMaterial color="#2ecc71" gradientMap={toonGradient()} />
+        <Ink />
       </mesh>
     </group>
   )
@@ -287,13 +272,13 @@ export default function Office() {
       {/* rumput di luar */}
       <mesh position={[0, -0.05, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
         <planeGeometry args={[80, 80]} />
-        <meshToonMaterial color="#7ec850" />
+        <meshToonMaterial color="#7ec850" gradientMap={toonGradient()} />
       </mesh>
 
       {/* jalan masuk setapak */}
       <mesh position={[0, -0.04, WALL + 2.5]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
         <planeGeometry args={[3, 5]} />
-        <meshToonMaterial color="#b8b8b0" />
+        <meshToonMaterial color="#b8b8b0" gradientMap={toonGradient()} />
       </mesh>
 
       {/* pohon & semak di sekeliling kantor */}
@@ -321,12 +306,6 @@ export default function Office() {
       <Vending x={11.2} z={-5.3} rot={-Math.PI / 2} />
       <Arcade x={11.2} z={-7} rot={-Math.PI / 2} />
       <Arcade x={11.2} z={-8} rot={-Math.PI / 2} />
-
-      {/* awan di langit */}
-      <Cloud x={-10} y={9} z={-8} s={1.3} />
-      <Cloud x={8} y={10} z={-4} s={1} />
-      <Cloud x={2} y={11} z={8} s={1.5} />
-      <Cloud x={-6} y={9.5} z={12} s={0.9} />
 
       {/* dinding modern: pilar + panel kaca transparan, tinggi 2.6 */}
       {[
@@ -362,7 +341,8 @@ export default function Office() {
       {[-8, -2.5, 3, 8.5].map((x, i) => (
         <mesh key={`fh${i}`} position={[x, 0.75, WALL]}>
           <boxGeometry args={[4.6, 0.12, 0.1]} />
-          <meshToonMaterial color="#fcfcf7" />
+          <meshToonMaterial color="#fcfcf7" gradientMap={toonGradient()} />
+          <Ink />
         </mesh>
       ))}
 

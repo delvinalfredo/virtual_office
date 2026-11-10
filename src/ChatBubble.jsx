@@ -1,19 +1,11 @@
-import { Billboard, Text } from '@react-three/drei'
+import { Html } from '@react-three/drei'
 
-// bubble chat umum di atas kepala
-export function ChatBubble({ text }) {
+// gelembung ucapan di atas kepala (DOM, jadi emoji dan font ikut tema).
+// lift menaikkan gelembung; tamu agen yang duduk berdekatan diberi tinggi berbeda supaya tidak saling menutup.
+export function ChatBubble({ text, lift = 0 }) {
   return (
-    <Billboard position={[0, 2.0, 0]}>
-      <Text
-        fontSize={0.18}
-        color="#fff"
-        anchorX="center"
-        maxWidth={2.6}
-        outlineWidth={0.02}
-        outlineColor="#000"
-      >
-        {text}
-      </Text>
-    </Billboard>
+    <Html position={[0, 2.75 + lift, 0]} center zIndexRange={[6, 0]} pointerEvents="none">
+      <div className="say">{text}</div>
+    </Html>
   )
 }

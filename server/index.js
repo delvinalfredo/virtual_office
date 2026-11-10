@@ -3,17 +3,31 @@ import { WebSocketServer } from 'ws'
 import http from 'node:http'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import db, { getAgents, getTasks, insertTask, updateTask } from './db.js'
+import db, { getAgents, getTasks, getTasksByStatus, recoverStuckTasks, insertTask, updateTask } from './db.js'
 import { clampToRoom, resolveObstacles, WALL } from '../src/office-plan.js'
+import { parseHook } from './live.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const app = express()
+
+// ---- hook Claude Code → kantor ----
+// Hanya dari mesin ini. Didaftarkan sebelum express.json bawaan karena payload tool bisa besar
+// (isi file); payload rusak atau kelewat besar dijawab 200 supaya hook tidak mencatat kegagalan.
+const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1'])
+app.post(
+  '/api/events',
+  (req, res, next) => (LOOPBACK.has(req.socket.remoteAddress) ? next() : res.status(403).json({ error: 'hanya dari mesin ini' })),
+  express.json({ limit: '25mb' }),
+  (req, res) => { applyHook(parseHook(req.body)); res.json({ ok: true }) },
+  (_err, _req, res, _next) => res.json({ ok: false }),
+)
+
 app.use(express.json())
 // serve hasil build vite (production)
 app.use(express.static(path.join(__dirname, '..', 'dist')))
 
 const server = http.createServer(app)
-const wss = new WebSocketServer({ server })
+const wss = new WebSocketServer({ server, maxPayload: 4096 })
 
 // ---- state runtime ----
 // agent: { id, role, x, z, tx, tz, state: idle|walking|working, heading, task, bubble, restT }
@@ -26,10 +40,18 @@ for (const a of getAgents()) {
   })
 }
 
-// player peers: ws → { name, x, z }
+// player peers: ws → { name, want, x, z, level }  (want = nama yang diminta klien)
 const peers = new Map()
 
+// riwayat chat di memori, dikirim ke pendatang baru lewat snapshot
+const chatLog = []
+
 const SPEED = 3.5
+// jarak "sudah sampai". Titik meja agent menempel di tepi kotak tabrakan meja, jadi resolveObstacles
+// mendorong agent sekitar 0,25 keluar dan titik persisnya tidak pernah tercapai.
+const ARRIVE = 0.35
+// teks bubble saat lead menyetujui task; klien (AgentAvatars.jsx) memakainya sebagai pemicu konfeti
+const APPROVED = 'Disetujui'
 const DESKS = Object.fromEntries(getAgents().map((a) => [a.id, { x: a.desk_x, z: a.desk_z }]))
 
 // spot santai untuk idle behavior
@@ -37,55 +59,170 @@ const HANGOUTS = [
   { x: 0, z: 1 }, { x: -2, z: 2 }, { x: 2, z: 2 }, { x: -8, z: -1 }, { x: 8, z: -2 },
 ]
 
+// ---- agen nyata dari hook Claude Code (server/live.js, .claude/settings.json) ----
+// Tiap subagent yang berjalan muncul sebagai karakter tamu: masuk lewat pintu depan, duduk di
+// kursi ruang meeting, bubble-nya mengikuti tool yang sedang dipakai, lalu berkonfeti dan pulang.
+// Mereka memakai gerak dan loop yang sama dengan agent simulasi, tapi tidak punya task di database.
+const LIVE_MAX = 12
+const LINGER_MS = Number(process.env.LIVE_LINGER_MS ?? 4000)
+const LIVE_STALE_MS = 15 * 60 * 1000 // SubagentStop yang tak pernah datang (sesi mati): pulangkan sendiri
+const DOOR = { x: 0, z: 10.4 }
+const DONE = 'Selesai' // klien (AgentAvatars.jsx) memakainya sebagai pemicu konfeti
+// Kursi yang bisa dicapai dengan jalan lurus dari pintu lewat lorong tengah (agen belum punya pencarian
+// rute): sisi selatan dan samping meja meeting, lalu beberapa titik di lorong antar baris meja.
+// Sisi utara meja sengaja tidak dipakai, karena meja menghadang jalan lurus ke sana.
+const SEATS = [
+  { x: -1.6, z: -5.1 }, { x: 1.6, z: -5.1 }, { x: 0, z: -4.6 }, { x: -3.2, z: -7 }, { x: 3.2, z: -7 },
+  { x: -3.4, z: -5.1 }, { x: 3.4, z: -5.1 }, { x: -1.4, z: 0.2 }, { x: 1.4, z: 0.2 }, { x: 0, z: 1.4 },
+]
+let dirty = false // ada perubahan di luar gerak (agen datang, pergi, ganti bubble) yang perlu disiarkan
+const pendingAsk = new Map() // tipe subagent → deskripsi dari sesi utama, dipakai SubagentStart berikutnya
+const liveAgents = () => [...agents.values()].filter((a) => a.live)
+
+const pubAgent = (a) => ({
+  id: a.id, role: a.role, x: +a.x.toFixed(2), z: +a.z.toFixed(2), heading: +a.heading.toFixed(2), state: a.state, bubble: a.bubble,
+  ...(a.live && { live: true, look: a.look, label: a.label }),
+})
+
+function freeSeat() {
+  const used = new Set(liveAgents().map((a) => a.seat))
+  const i = SEATS.findIndex((_, k) => !used.has(k))
+  return i >= 0 ? { ...SEATS[i], i } : { x: (Math.random() - 0.5) * 6, z: -3.5 + Math.random() * 2.5, i: -1 }
+}
+
+function liveStart(rawId, type) {
+  const id = `live-${rawId}`
+  if (agents.has(id) || liveAgents().length >= LIVE_MAX) return
+  const queue = pendingAsk.get(type) ?? []
+  while (queue.length && Date.now() - queue[0].at > 120000) queue.shift()
+  const ask = queue.shift()
+  const same = liveAgents().filter((a) => a.look === type).length
+  const seat = freeSeat()
+  agents.set(id, {
+    id, role: 'live', live: true, skill: 1, look: type, label: same ? `${type} ${same + 1}` : type,
+    x: DOOR.x, z: DOOR.z, tx: seat.x, tz: seat.z, seat: seat.i, state: 'walking', heading: Math.PI,
+    task: null, bubble: ask?.text || 'Mulai bekerja', restT: 0, lastEvent: Date.now(),
+  })
+  dirty = true
+}
+
+function liveTool(rawId, type, text) {
+  const a = agents.get(`live-${rawId}`)
+  if (!a) {
+    // hook dipasang di tengah proses: SubagentStart terlewat, jadi agen dibuat dari event tool pertama
+    if (type) { liveStart(rawId, type); const n = agents.get(`live-${rawId}`); if (n) n.bubble = text }
+    return
+  }
+  if (a.done) return
+  a.bubble = text
+  a.lastEvent = Date.now()
+  dirty = true
+}
+
+function liveStop(id) {
+  const a = agents.get(id)
+  if (!a || a.done) return
+  a.done = true
+  a.state = 'idle'
+  a.tx = a.x
+  a.tz = a.z
+  a.via = null
+  a.bubble = DONE
+  a.leaveAt = Date.now() + LINGER_MS
+  dirty = true
+}
+
+function applyHook(act) {
+  if (!act) return
+  if (act.kind === 'start') liveStart(act.id, act.type)
+  else if (act.kind === 'stop') liveStop(`live-${act.id}`)
+  else if (act.kind === 'tool') liveTool(act.id, act.type, act.text)
+  else if (act.kind === 'ask') {
+    const q = pendingAsk.get(act.type) ?? []
+    q.push({ text: act.text, at: Date.now() })
+    pendingAsk.set(act.type, q.slice(-20))
+  }
+}
+
 function broadcast(obj) {
   const s = JSON.stringify(obj)
   for (const c of wss.clients) if (c.readyState === 1) c.send(s)
 }
 
-function snapshot() {
+function sayChat(m) {
+  const msg = { type: 'chat', ...m, at: Date.now() }
+  chatLog.push(msg)
+  if (chatLog.length > 30) chatLog.shift()
+  broadcast(msg)
+}
+
+// daftar pemain lain untuk satu penerima: dirinya sendiri tidak ikut, jadi klien tidak perlu menyaring
+const peerList = (except) =>
+  [...peers].filter(([c]) => c !== except).map(([, q]) => ({ name: q.name, x: q.x, z: q.z, level: q.level }))
+
+function broadcastPeers(skip = null) {
+  for (const c of wss.clients) {
+    if (c !== skip && c.readyState === 1) c.send(JSON.stringify({ type: 'peers', peers: peerList(c) }))
+  }
+}
+
+// nama harus unik antar peer; tambahkan suffix kalau sudah dipakai orang lain
+function uniqueName(base, self) {
+  const taken = (n) => [...peers].some(([c, q]) => c !== self && q.name === n)
+  if (!taken(base)) return base
+  let n = 2
+  while (taken(`${base}-${n}`)) n++
+  return `${base}-${n}`
+}
+
+function snapshot(ws) {
   return {
     type: 'snapshot',
-    agents: [...agents.values()].map(({ id, role, x, z, heading, state, bubble }) => ({ id, role, x: +x.toFixed(2), z: +z.toFixed(2), heading: +heading.toFixed(2), state, bubble })),
+    agents: [...agents.values()].map(pubAgent),
     agentsStatic: getAgents(),
     tasks: getTasks(),
-    peers: [...peers.values()].map(({ name, x, z }) => ({ name, x: +x.toFixed(2), z: +z.toFixed(2) })),
+    peers: peerList(ws),
+    chat: chatLog,
   }
 }
 
 wss.on('connection', (ws) => {
-  ws.send(JSON.stringify(snapshot()))
+  // tanpa listener ini, satu frame rusak atau terlalu besar dari klien mana pun mematikan seluruh server;
+  // ws menutup soketnya sendiri, handler 'close' di bawah yang membersihkan peer
+  ws.on('error', () => {})
+  ws.send(JSON.stringify(snapshot(ws)))
   ws.on('message', (data) => {
     let m
     try { m = JSON.parse(data) } catch { return }
     if (m.type === 'player-pos') {
       // validasi posisi: tolak NaN / tipe aneh biar ga relay sampah ke client lain
       if (!Number.isFinite(m.x) || !Number.isFinite(m.z)) return
-      let name = typeof m.name === 'string' ? m.name.slice(0, 24).trim() : ''
-      if (!name) name = `tamu${peers.size + 1}`
-      // nama harus unik antar peer; tambahkan suffix kalau sudah dipakai orang lain
-      const taken = (n) => [...peers.values()].some((p) => p.name === n)
-      if (taken(name)) {
-        let n = 2
-        while (taken(`${name}-${n}`)) n++
-        name = `${name}-${n}`
+      const want = typeof m.name === 'string' ? m.name.slice(0, 24).trim() : ''
+      let p = peers.get(ws)
+      if (!p) { p = {}; peers.set(ws, p) }
+      // nama dihitung ulang hanya saat permintaan berubah, jadi pemain bisa ganti nama tanpa suffix naik terus
+      if (p.want !== want) {
+        p.want = want
+        p.name = uniqueName(want || `tamu${peers.size}`, ws)
       }
-      const p = peers.get(ws) ?? { name }
       p.x = +(+m.x).toFixed(2)
       p.z = +(+m.z).toFixed(2)
-      peers.set(ws, p)
-      // relay ke pemain lain (bukan pengirim)
-      const msg = JSON.stringify({ type: 'peers', peers: [...peers.values()].map(q => ({ name: q.name, x: q.x, z: q.z })) })
-      for (const [c] of peers) {
-        if (c !== ws && c.readyState === 1) c.send(msg)
-      }
-    } else if (m.type === 'chat') {
+      p.level = m.level === 1 ? 1 : 0
+      broadcastPeers(ws)
+    } else if (m.type === 'chat' || m.type === 'dm-agent') {
+      // batasi spam: satu pesan per 500 ms per koneksi
+      const now = Date.now()
+      if (now - (ws.lastChatAt ?? 0) < 500) return
+      ws.lastChatAt = now
+    }
+    if (m.type === 'chat') {
       // chat global: siarkan ke semua (termasuk pengirim biar tampil konsisten)
       const p = peers.get(ws)
       const text = String(m.text ?? '').slice(0, 120)
       if (text.trim()) {
-        broadcast({ type: 'chat', name: p?.name ?? '??', text, agent: null, at: Date.now() })
+        sayChat({ name: p?.name ?? '??', text, agent: null })
         // jawaban canned dari agent terdekat
-        const nearest = [...agents.values()].sort(
+        const nearest = [...agents.values()].filter((a) => !a.live).sort(
           (a, b) => Math.hypot(a.x - (p?.x ?? 0), a.z - (p?.z ?? 0)) - Math.hypot(b.x - (p?.x ?? 0), b.z - (p?.z ?? 0))
         )[0]
         setTimeout(() => {
@@ -94,10 +231,10 @@ wss.on('connection', (ws) => {
               'siap! ada yang bisa dibantu?',
               'oh iya? nanti ku kerjain',
               'hmm, catat dulu ya di task',
-              'yes boss 😄',
+              'yes boss',
               'sabar, masih backlog nih',
             ]
-            broadcast({ type: 'chat', name: nearest.id, text: replies[Math.floor(Math.random() * replies.length)], agent: nearest.id, at: Date.now() })
+            sayChat({ name: nearest.id, text: replies[Math.floor(Math.random() * replies.length)], agent: nearest.id })
           }
         }, 900)
       }
@@ -107,29 +244,28 @@ wss.on('connection', (ws) => {
       if (a) {
         const text = String(m.text ?? '').slice(0, 120)
         const replies = {
-          programmer: ['oke, kucatat di backlog', 'kuberes sekitar 502 hari ini 😅', 'coba cek board, tasknya jalan'],
+          programmer: ['oke, kucatat di backlog', 'kuberes sekitar 502 hari ini', 'coba cek board, tasknya jalan'],
           designer: ['mantap, ku masuk sprint berikut', 'warna? biru lagi dong', 'figma-nya lagi dibuka'],
           qa: ['ikatanyaku baik, task ada', 'kasih estimasi ya', 'lulus QA? ntar ku tes'],
           lead: ['prioritasnya bagus', 'tarik aman dulu', 'meeting 5 menit?'],
         }
         const reply = (replies[a.role] ?? ['noted'])[Math.floor(Math.random() * 3)]
-        a.bubble = `💬 ${reply}`
+        a.bubble = reply
         a.restT = 3
-        broadcast({ type: 'chat', name: a.id, text: reply, agent: a.id, at: Date.now() })
+        sayChat({ name: a.id, text: reply, agent: a.id })
       }
     }
   })
   ws.on('close', () => {
     peers.delete(ws)
-    broadcast({ type: 'peers', peers: [...peers.values()].map(q => ({ name: q.name, x: q.x, z: q.z })) })
+    broadcastPeers()
   })
 })
 
 // ---- dispatch: berikan task todo ke agent idle ----
 function dispatch() {
-  const todos = getTasks().filter((t) => t.status === 'todo')
-  for (const t of todos) {
-    const agent = [...agents.values()].find((a) => a.state === 'idle' && a.role !== 'lead')
+  for (const t of getTasksByStatus('todo')) {
+    const agent = [...agents.values()].find((a) => a.state === 'idle' && a.role !== 'lead' && !a.live)
     if (!agent) break
     assign(agent, t)
   }
@@ -137,15 +273,14 @@ function dispatch() {
 
 // ---- review: ambil task status review ke pengurus lead (skill paling tinggi) ----
 function dispatchReview() {
-  const reviews = getTasks().filter((t) => t.status === 'review')
-  for (const t of reviews) {
+  for (const t of getTasksByStatus('review')) {
     const lead = [...agents.values()].find((a) => a.state === 'idle' && a.role === 'lead')
     if (!lead) break // lead sibuk → nunggu
     // lead berjalan ke ruang meeting untuk review
     updateTask(t.id, { status: 'in_progress', agent_id: lead.id, progress: 0, est: 3 })
     lead.task = t.id
     lead.state = 'walking'
-    lead.bubble = `🔎 review: ${t.title}`
+    lead.bubble = `Review: ${t.title}`
     lead.tx = 0 // ruang meeting
     lead.tz = -5.2
     broadcast({ type: 'task-update' })
@@ -156,7 +291,7 @@ function assign(agent, task) {
   updateTask(task.id, { status: 'in_progress', agent_id: agent.id })
   agent.task = task.id
   agent.state = 'walking'
-  agent.bubble = `📄 ${task.title}`
+  agent.bubble = `Mengerjakan: ${task.title}`
   agent.tx = DESKS[agent.id].x
   agent.tz = DESKS[agent.id].z
   broadcast({ type: 'task-update' })
@@ -176,10 +311,10 @@ const MOODS = {
   lead: ['review desain API', 'cek style kode', 'peta risiko', 'susun estimasi'],
 }
 const CLOSERS = {
-  programmer: (f, n) => `✔ selesai\nfiles: ${f} file diubah (+${n * 37} -${n * 8})\ntest: ${n * 4} passed, 0 gagal`,
-  designer: (f) => `✔ mockup siap\n${f} frame baru\nhandoff: siap di-review tim`,
-  qa: (f, n) => `✔ uji tuntas\n${n * 6} kasus dijalankan, ${Math.max(0, n - 1)} gagal ditemukan\nkualitas: lolos`,
-  lead: (f) => `✔ review disetujui ✅\nkeputusan: merge\ncatatan: ${f} poin minor (ikut sprint depat)`,
+  programmer: (f, n) => `Selesai\nfiles: ${f} file diubah (+${n * 37} -${n * 8})\ntest: ${n * 4} passed, 0 gagal`,
+  designer: (f) => `Mockup siap\n${f} frame baru\nhandoff: siap di-review tim`,
+  qa: (f, n) => `Uji tuntas\n${n * 6} kasus dijalankan, ${Math.max(0, n - 1)} gagal ditemukan\nkualitas: lolos`,
+  lead: (f) => `Review disetujui\nkeputusan: merge\ncatatan: ${f} poin minor (ikut sprint depat)`,
 }
 
 // pipeline per agent: daftar { label, durasi-fraksi } — total fraksi = 1
@@ -201,7 +336,7 @@ function finishOutput(role, title) {
   const f = 2 + Math.floor(Math.random() * 4)
   const n = 1 + Math.floor(Math.random() * 3)
   return {
-    text: CLOSERS[role]?.(f, n) ?? `✔ ${title} tuntas`,
+    text: CLOSERS[role]?.(f, n) ?? `${title} tuntas`,
     log: `${STARTERS[role]?.(title) ?? 'mulai'}\n${MOODS[role].join('\n')}\n${CLOSERS[role]?.(f, n) ?? 'selesai'}`,
   }
 }
@@ -210,14 +345,59 @@ function finishOutput(role, title) {
 const TICK = 50
 setInterval(() => {
   const dt = TICK / 1000
-  let posChanged = false
+  let posChanged = dirty
+  dirty = false
 
   for (const a of agents.values()) {
-    // bergerak ke target dgn collision sederhana
-    const dx = a.tx - a.x
-    const dz = a.tz - a.z
+    // tamu agen nyata: pulang setelah selesai, atau bila kabar terakhirnya sudah terlalu lama
+    if (a.live) {
+      const now = Date.now()
+      if (!a.done && now - a.lastEvent > LIVE_STALE_MS) liveStop(a.id)
+      if (a.done && !a.leaving && now > a.leaveAt) {
+        a.leaving = true
+        a.tx = DOOR.x
+        a.tz = DOOR.z
+        a.state = 'walking'
+        a.idleWalk = true // supaya tiba di pintu tidak diubah jadi "working"
+        a.bubble = null
+        posChanged = true
+      }
+      if (a.leaving && Math.hypot(DOOR.x - a.x, DOOR.z - a.z) <= ARRIVE + 0.3) {
+        agents.delete(a.id)
+        posChanged = true
+        continue
+      }
+    }
+
+    // Macet: agent berjalan lurus ke target dan bisa tertahan tegak lurus di tepi kotak meja (misalnya
+    // tepat di utara meja yang dituju di seberang). Tiap 1,5 detik, bila nyaris tidak bergerak, ia
+    // berbelok lewat lorong tengah (x = 0); bila tetap gagal setelah 10 detik, langsung dipindah ke target.
+    // shortcut: bukan pencarian rute sungguhan, cukup untuk denah ini; ganti dengan A* bila denah berubah
+    if (a.state === 'walking') {
+      a.walkT = (a.walkT ?? 0) + dt
+      a.sampT = (a.sampT ?? 0) + dt
+      if (a.sampT >= 1.5) {
+        if (a.sx !== undefined && Math.hypot(a.x - a.sx, a.z - a.sz) < 0.15 && Math.hypot(a.tx - a.x, a.tz - a.z) > ARRIVE) {
+          a.via = a.via ? null : { x: 0, z: a.z }
+        }
+        a.sx = a.x
+        a.sz = a.z
+        a.sampT = 0
+      }
+      if (a.walkT > 10) { a.x = a.tx; a.z = a.tz; a.via = null; a.walkT = 0; posChanged = true }
+    } else {
+      a.walkT = 0
+      a.sampT = 0
+      a.sx = undefined
+      a.via = null
+    }
+
+    // bergerak ke target (atau titik belok) dgn collision sederhana
+    const dx = (a.via ? a.via.x : a.tx) - a.x
+    const dz = (a.via ? a.via.z : a.tz) - a.z
     const dist = Math.hypot(dx, dz)
-    if (dist > 0.05) {
+    if (a.via && dist <= ARRIVE) a.via = null
+    if (dist > ARRIVE) {
       const step = Math.min(SPEED * dt, dist)
       const obj = { x: a.x + (dx / dist) * step, z: a.z + (dz / dist) * step }
       clampToRoom(obj)
@@ -226,10 +406,10 @@ setInterval(() => {
       a.x = obj.x
       a.z = obj.z
       posChanged = true
-      if (Math.hypot(a.tx - a.x, a.tz - a.z) <= 0.05) {
-        if (a.state === 'walking') a.state = 'working'
-      }
-    } else if (a.state === 'walking') {
+      // jalan santai yang selesai ditangani blok idle di bawah; kalau diubah jadi working di sini,
+      // agent tanpa task tidak pernah kembali idle dan tidak pernah dipilih dispatcher
+      if (Math.hypot(a.tx - a.x, a.tz - a.z) <= ARRIVE && a.state === 'walking' && !a.idleWalk) a.state = 'working'
+    } else if (a.state === 'walking' && !a.idleWalk && Math.hypot(a.tx - a.x, a.tz - a.z) <= ARRIVE) {
       // sudah di target (mis. spawn tepat di meja) → langsung kerja
       a.state = 'working'
     }
@@ -265,7 +445,7 @@ setInterval(() => {
           : { status: 'review', progress: t.est })
         a.task = null
         a.state = 'idle'
-        a.bubble = isReview ? '✅ approved' : '📨 kirim review'
+        a.bubble = isReview ? APPROVED : 'Kirim ke review'
         a.restT = 3
         broadcast({ type: 'task-update' })
         if (isReview) {
@@ -279,7 +459,7 @@ setInterval(() => {
     }
 
     // idle behavior: setelah selesai/punya waktu luang, jalan-jalan sesekali
-    if (a.state === 'idle') {
+    if (a.state === 'idle' && !a.live) {
       if (a.restT > 0) {
         a.restT -= dt
         if (a.restT <= 0) a.bubble = null
@@ -294,14 +474,14 @@ setInterval(() => {
           a.idleWalk = true
         } else {
           // ngomong sendiri
-          const chat = ['☕ ngopi dulu', 'push & pray', 'baca docs dulu', 'review pr temen', 'enta task lagi...']
+          const chat = ['ngopi dulu', 'push & pray', 'baca docs dulu', 'review pr temen', 'enta task lagi...']
           a.bubble = chat[Math.floor(Math.random() * chat.length)]
           a.restT = 2 + Math.random() * 2
         }
       }
     }
     // selesai idle-walk: kembali jadi idle di spot
-    if (a.idleWalk && a.state === 'walking' && Math.hypot(a.tx - a.x, a.tz - a.z) <= 0.05) {
+    if (a.idleWalk && a.state === 'walking' && Math.hypot(a.tx - a.x, a.tz - a.z) <= ARRIVE) {
       a.idleWalk = false
       a.state = 'idle'
       a.bubble = null
@@ -309,15 +489,12 @@ setInterval(() => {
     }
   }
 
-  if (posChanged) {
-    broadcast({
-      type: 'agents',
-      agents: [...agents.values()].map((a) => ({ id: a.id, x: +a.x.toFixed(2), z: +a.z.toFixed(2), heading: +a.heading.toFixed(2), state: a.state, bubble: a.bubble })),
-    })
-  }
+  if (posChanged) broadcast({ type: 'agents', agents: [...agents.values()].map(pubAgent) })
 }, TICK)
 
 // dispatch awal & berkala
+const recovered = recoverStuckTasks()
+if (recovered.todo || recovered.review) console.log(`task nyangkut dipulihkan: ${recovered.todo} ke todo, ${recovered.review} ke review`)
 dispatch()
 dispatchReview()
 setInterval(() => { dispatch(); dispatchReview() }, 1000)
