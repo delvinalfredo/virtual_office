@@ -8,7 +8,7 @@
 // - Tanpa --bare, karena --bare tidak memakai login. Akibatnya hook dan MCP milik proyek ikut berjalan.
 // - Mode tanpa layar tidak bisa bertanya izin: tool di luar daftar ditolak, dan jumlahnya dilaporkan.
 import { spawn } from 'node:child_process'
-import { describeTool } from './live.js'
+import { describeTool, clean } from './live.js'
 
 export const MAX_PROMPT = 4000
 const MAX_KEPT = 30
@@ -27,7 +27,15 @@ export function createSessions({ projects, bin = 'claude', maxRunning = 3, timeo
     try { m = JSON.parse(line) } catch { return }
     if (!m || typeof m !== 'object') return
     if (typeof m.session_id === 'string' && !s.claudeId) s.claudeId = m.session_id.slice(0, 80)
-    if (m.type === 'assistant') {
+    if (m.type === 'system' && typeof m.subtype === 'string' && m.subtype.startsWith('task_')) {
+      onSubagent(s, m)
+    } else if (m.type === 'user') {
+      // hasil panggilan Agent: penanda selesai cadangan bila task_notification tidak datang
+      const blocks = Array.isArray(m.message?.content) ? m.message.content : []
+      for (const b of blocks) {
+        if (b?.type === 'tool_result' && typeof b.tool_use_id === 'string') endSubagent(s, clean(b.tool_use_id, 64), b.is_error ? 'failed' : 'done')
+      }
+    } else if (m.type === 'assistant') {
       const blocks = Array.isArray(m.message?.content) ? m.message.content : []
       for (const b of blocks) {
         if (b?.type === 'tool_use') {
@@ -54,8 +62,40 @@ export function createSessions({ projects, bin = 'claude', maxRunning = 3, timeo
     }
   }
 
+  // Subagent yang dipanggil sesi: task_started / task_progress / task_notification membawa tool_use_id panggilannya.
+  // Untuk kantor hanya dipakai jenis subagent dan nama tool terakhir, bukan deskripsi bebas yang ditulis model.
+  function onSubagent(s, m) {
+    const id = clean(m.tool_use_id, 64)
+    const type = clean(m.subagent_type, 32)
+    if (!id || !type) return
+    const sub = s.subagents.get(id)
+    if (m.subtype === 'task_started') {
+      if (sub) return
+      s.subagents.set(id, { type, state: 'running' })
+      emit('onSubagent', s, { kind: 'start', id, type })
+    } else if (m.subtype === 'task_progress') {
+      if (sub?.state !== 'running') return
+      emit('onSubagent', s, { kind: 'tool', id, type, text: describeTool(m.last_tool_name, {}) })
+    } else if (m.subtype === 'task_notification') {
+      endSubagent(s, id, m.status === 'completed' ? 'done' : 'failed')
+    } else return
+    emit('onChange')
+  }
+
+  function endSubagent(s, id, state) {
+    const sub = s.subagents.get(id)
+    if (sub?.state !== 'running') return
+    sub.state = state
+    emit('onSubagent', s, { kind: 'stop', id })
+    emit('onChange')
+  }
+
   function finish(s, code, why) {
     if (s.state !== 'running' && s.state !== 'stopping') return
+    // subagent yang belum sempat melapor selesai (sesi dihentikan, gagal) tidak boleh tinggal di kantor
+    for (const [id, sub] of s.subagents) {
+      if (sub.state === 'running') { sub.state = 'stopped'; emit('onSubagent', s, { kind: 'stop', id }) }
+    }
     s.child = null
     s.endedAt = Date.now()
     if (s.stopRequested) s.state = 'stopped'
@@ -70,11 +110,16 @@ export function createSessions({ projects, bin = 'claude', maxRunning = 3, timeo
 
   function launch(s, prompt, resume) {
     const project = projects.find((p) => p.id === s.projectId)
+    const run = s.run
     const args = [
       '-p', prompt, '--output-format', 'stream-json', '--verbose',
       '--permission-mode', 'acceptEdits', `--allowedTools=${project.allowedTools.join(',')}`,
+      ...(run?.agentsFile ? ['--agents', run.agentsFile] : []),
+      ...(run?.appendPrompt ? ['--append-system-prompt', run.appendPrompt] : []),
+      ...(run?.budget ? ['--max-budget-usd', String(run.budget)] : []),
       ...(resume ? ['--resume', resume] : []),
     ]
+    s.subagents = new Map()
     const [cmd, argv] = /\.m?js$/.test(bin) ? [process.execPath, [bin, ...args]] : [bin, args]
     Object.assign(s, { state: 'running', activity: 'Memulai', endedAt: null, stderr: '', result: null, error: null, stopRequested: false, timedOut: false })
     let child
@@ -106,7 +151,7 @@ export function createSessions({ projects, bin = 'claude', maxRunning = 3, timeo
     if (!text) return { error: 'tugas kosong' }
     if (text.length > MAX_PROMPT) return { error: `tugas terlalu panjang (maksimal ${MAX_PROMPT} huruf)` }
     if (text.startsWith('-')) return { error: 'tugas tidak boleh diawali tanda minus' }
-    if (running().length >= maxRunning) return { error: `sudah ${maxRunning} sesi berjalan, tunggu salah satunya selesai` }
+    if (running().length >= maxRunning) return { error: `sudah ${maxRunning} sesi berjalan, tunggu salah satunya selesai`, busy: true }
     return { text }
   }
 
@@ -116,12 +161,13 @@ export function createSessions({ projects, bin = 'claude', maxRunning = 3, timeo
   }
 
   return {
-    start({ projectId, prompt }) {
+    // run (opsional): { agentsFile, appendPrompt, budget } untuk sesi dari papan Kanban; dipakai lagi saat dilanjutkan
+    start({ projectId, prompt, run = null }) {
       const c = check(projectId, prompt)
       if (c.error) return c
       prune()
       const p = projects.find((x) => x.id === projectId)
-      const s = { id: `s${++counter}`, projectId, projectName: p.name, tools: 0, lastText: '', claudeId: null, startedAt: Date.now(), runs: 1 }
+      const s = { id: `s${++counter}`, projectId, projectName: p.name, tools: 0, lastText: '', claudeId: null, startedAt: Date.now(), runs: 1, run, subagents: new Map() }
       byId.set(s.id, s)
       launch(s, c.text)
       return { id: s.id }
@@ -153,7 +199,13 @@ export function createSessions({ projects, bin = 'claude', maxRunning = 3, timeo
         id: s.id, projectId: s.projectId, project: s.projectName, state: s.state, activity: s.activity,
         lastText: s.lastText, tools: s.tools, startedAt: s.startedAt, endedAt: s.endedAt, runs: s.runs,
         result: s.result, error: s.error ?? null, canContinue: FINISHED.has(s.state) && !!s.claudeId,
+        subagents: [...s.subagents.values()].map(({ type, state }) => ({ type, state })),
       }))
     },
+    // id sesi Claude milik sesi dashboard: event hook dari sesi itu diabaikan karena subagent-nya sudah terbaca dari stream
+    ownsClaudeId(id) {
+      return typeof id === 'string' && [...byId.values()].some((s) => s.claudeId === id)
+    },
+    get(id) { return byId.get(id) ?? null },
   }
 }

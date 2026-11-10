@@ -13,6 +13,7 @@ import { ChatUI } from './ChatUI'
 import { AgentDM } from './AgentDM'
 import { Sessions } from './Sessions'
 import { useKantor } from './useKantor'
+import { useControl } from './useControl'
 import { useState, useRef, useCallback } from 'react'
 import { SKY_FOG, GROUND_BOUNCE } from './theme3d'
 
@@ -30,6 +31,7 @@ export default function App() {
   const [cameraMode, setCameraMode] = useState('follow')
   const [quality, setQuality] = useState(() => FORCED_Q ?? savedQ())
   const { agents, agentsStatic, tasks, peers, chat, online, sessionsTick, addTask, sendPos, sendChat } = useKantor()
+  const control = useControl(sessionsTick)
   const [dmAgent, setDmAgent] = useState(null)
   // nama tersimpan di browser; kalau belum ada, acak sekali lalu diingat
   const [playerName, setPlayerName] = useState(() => {
@@ -91,8 +93,8 @@ export default function App() {
         {cameraMode === 'orbit' && <OrbitControls />}
       </Canvas>
 
-      <Board tasks={tasks} onDelete={deleteTask} />
-      <Sessions tick={sessionsTick} />
+      <Board tasks={tasks} onDelete={deleteTask} control={control} />
+      <Sessions control={control} />
       <ChatUI chat={chat} onSend={(t) => sendChat(t)} />
       {dmAgent && (
         <AgentDM
@@ -106,7 +108,7 @@ export default function App() {
         agents={agents}
         onTeleport={(p) => teleportRef.current?.(p)}
       />
-      <TaskForm onAdd={addTask} />
+      <TaskForm onAdd={addTask} control={control} />
 
       {!online && (
         <div role="status" className="status panel">

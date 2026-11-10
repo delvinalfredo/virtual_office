@@ -27,6 +27,7 @@ const make = (extra = {}) => {
       onStart: (s) => events.push(['start', s.projectName]),
       onTool: (s, text) => events.push(['tool', text]),
       onStop: (s) => events.push(['stop', s.state]),
+      ...extra.hooks,
     },
   })
   return { sessions, events }
@@ -128,4 +129,72 @@ test('loadProjects: hanya folder yang ada, nama jadi id, izin awal sempit, alat 
   assert.deepEqual(list[0].allowedTools, DEFAULT_TOOLS)
   assert.deepEqual(list[1].allowedTools, ['Read', 'Bash(git *)'])
   assert.deepEqual(loadProjects(path.join(tmp, 'tidak-ada.json')), [])
+})
+
+test('subagent: muncul, memakai tool, selesai; yang tak sempat melapor dihentikan saat sesi berakhir', async () => {
+  const sub = []
+  const { sessions } = make({ hooks: { onSubagent: (_s, ev) => sub.push(`${ev.kind}:${ev.id}${ev.text ? ':' + ev.text : ''}`) } })
+  const { id } = sessions.start({ projectId: 'a', prompt: 'jalankan subagen menggantung' })
+  await waitFor(() => get(sessions, id).state === 'done')
+  assert.deepEqual(sub, [
+    'start:tu-a', 'start:tu-b',
+    'tool:tu-a:Membaca', // nama tool saja; deskripsi bebas dan path dari model tidak dipakai
+    'stop:tu-a',
+    'stop:tu-b', // tak pernah melapor selesai, dihentikan saat sesi berakhir
+  ])
+  assert.deepEqual(get(sessions, id).subagents, [{ type: 'planner', state: 'done' }, { type: 'tdd-guide', state: 'stopped' }])
+  assert.ok(!JSON.stringify(sessions.list()).includes('RAHASIA'))
+})
+
+test('subagent yang gagal dilaporkan berhenti, bukan selesai', async () => {
+  const { sessions } = make()
+  const { id } = sessions.start({ projectId: 'a', prompt: 'jalankan subagen' })
+  await waitFor(() => get(sessions, id).state === 'done')
+  assert.deepEqual(get(sessions, id).subagents.map((x) => x.state), ['done', 'failed'])
+})
+
+test('sesi dari papan Kanban membawa subagent kit, instruksi, dan batas biaya; sesi biasa tidak', async () => {
+  const { sessions } = make()
+  const plain = sessions.start({ projectId: 'a', prompt: 'biasa' })
+  const kanban = sessions.start({ projectId: 'a', prompt: 'dari papan', run: { agentsFile: '/tmp/a.json', appendPrompt: 'aturan kerja', budget: 2 } })
+  await waitFor(() => get(sessions, plain.id).state === 'done' && get(sessions, kanban.id).state === 'done')
+  const args = (id) => JSON.parse(get(sessions, id).result.text.split('args=')[1])
+  const k = args(kanban.id)
+  assert.equal(k[k.indexOf('--agents') + 1], '/tmp/a.json')
+  assert.equal(k[k.indexOf('--append-system-prompt') + 1], 'aturan kerja')
+  assert.equal(k[k.indexOf('--max-budget-usd') + 1], '2')
+  const p = args(plain.id)
+  for (const flag of ['--agents', '--append-system-prompt', '--max-budget-usd']) assert.equal(p.includes(flag), false, flag)
+  // dilanjutkan tetap membawa pengaturan yang sama
+  sessions.continueSession(kanban.id, 'lanjut')
+  await waitFor(() => get(sessions, kanban.id).runs === 2 && get(sessions, kanban.id).state === 'done')
+  assert.ok(args(kanban.id).includes('--agents'))
+})
+
+test('ownsClaudeId mengenali sesi dashboard, bukan id sembarang', async () => {
+  const { sessions } = make()
+  const { id } = sessions.start({ projectId: 'a', prompt: 'apa saja' })
+  await waitFor(() => get(sessions, id).state === 'done')
+  assert.equal(sessions.ownsClaudeId('fake-sess-1'), true)
+  assert.equal(sessions.ownsClaudeId('lain'), false)
+  assert.equal(sessions.ownsClaudeId(undefined), false)
+})
+
+test('penuh: galat ditandai busy supaya antrean menunggu, bukan menggagalkan task', async () => {
+  const { sessions } = make({ maxRunning: 1 })
+  const first = sessions.start({ projectId: 'a', prompt: 'lama sekali' })
+  const second = sessions.start({ projectId: 'a', prompt: 'kedua' })
+  assert.equal(second.busy, true)
+  assert.equal(sessions.start({ projectId: 'tidak-ada', prompt: 'x' }).busy, undefined)
+  sessions.stop(first.id)
+  await waitFor(() => get(sessions, first.id).state === 'stopped')
+})
+
+test('subagent tanpa task_notification dianggap selesai dari hasil panggilan Agent-nya', async () => {
+  const stops = []
+  const { sessions } = make({ hooks: { onSubagent: (_s, ev) => { if (ev.kind === 'stop') stops.push(ev.id) } } })
+  const { id } = sessions.start({ projectId: 'a', prompt: 'jalankan subagen hasilsaja' })
+  await waitFor(() => get(sessions, id).state === 'done')
+  assert.deepEqual(get(sessions, id).subagents.map((x) => x.state), ['done', 'done'])
+  assert.deepEqual(stops, ['tu-a', 'tu-b']) // tidak ada henti ganda saat sesi berakhir
 })

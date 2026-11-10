@@ -3,13 +3,14 @@ import { WebSocketServer } from 'ws'
 import http from 'node:http'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import db, { getAgents, getTasks, getTasksByStatus, recoverStuckTasks, insertTask, updateTask } from './db.js'
+import db, { getAgents, getTasks, getTasksByStatus, recoverStuckTasks, insertTask, updateTask, getTask, getRunningTaskBySession, insertClaudeTask, publicTask } from './db.js'
 import { clampToRoom, resolveObstacles, WALL } from '../src/office-plan.js'
 import { parseHook } from './live.js'
 import crypto from 'node:crypto'
 import { checkControl } from './control.js'
-import { loadProjects, addProject, removeProject } from './projects.js'
-import { createSessions } from './sessions.js'
+import { loadProjects, addProject, removeProject, setProjectChecks } from './projects.js'
+import { loadKitAgents, writeAgentsFile, orchestrationPrompt } from './kit.js'
+import { createSessions, MAX_PROMPT } from './sessions.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const app = express()
@@ -22,7 +23,7 @@ app.post(
   '/api/events',
   (req, res, next) => (LOOPBACK.has(req.socket.remoteAddress) ? next() : res.status(403).json({ error: 'hanya dari mesin ini' })),
   express.json({ limit: '25mb' }),
-  (req, res) => { applyHook(parseHook(req.body)); res.json({ ok: true }) },
+  (req, res) => { if (!sessions.ownsClaudeId(req.body?.session_id)) applyHook(parseHook(req.body)); res.json({ ok: true }) },
   (_err, _req, res, _next) => res.json({ ok: false }),
 )
 
@@ -275,6 +276,7 @@ wss.on('connection', (ws) => {
 // ---- dispatch: berikan task todo ke agent idle ----
 function dispatch() {
   for (const t of getTasksByStatus('todo')) {
+    if (t.mode !== 'sim') continue // task Claude dikerjakan sesi Claude Code, bukan agent simulasi
     const agent = [...agents.values()].find((a) => a.state === 'idle' && a.role !== 'lead' && !a.live)
     if (!agent) break
     assign(agent, t)
@@ -284,6 +286,7 @@ function dispatch() {
 // ---- review: ambil task status review ke pengurus lead (skill paling tinggi) ----
 function dispatchReview() {
   for (const t of getTasksByStatus('review')) {
+    if (t.mode !== 'sim') continue // task Claude menunggu keputusan pemilik komputer, bukan review lead simulasi
     const lead = [...agents.values()].find((a) => a.state === 'idle' && a.role === 'lead')
     if (!lead) break // lead sibuk → nunggu
     // lead berjalan ke ruang meeting untuk review
@@ -508,10 +511,10 @@ const recovered = recoverStuckTasks()
 if (recovered.todo || recovered.review) console.log(`task nyangkut dipulihkan: ${recovered.todo} ke todo, ${recovered.review} ke review`)
 dispatch()
 dispatchReview()
-setInterval(() => { dispatch(); dispatchReview() }, 1000)
+setInterval(() => { dispatch(); dispatchReview(); dispatchClaude() }, 1000)
 
 // ---- REST API ----
-app.get('/api/tasks', (_req, res) => res.json(getTasks()))
+app.get('/api/tasks', (req, res) => res.json(isOwner(req) ? getTasks() : getTasks().map(publicTask)))
 app.get('/api/agents', (_req, res) => res.json(getAgents()))
 app.post('/api/tasks', (req, res) => {
   const { title, est = 5 } = req.body || {}
@@ -529,6 +532,10 @@ app.delete('/api/tasks/:id', (req, res) => {
   const id = Number(req.params.id)
   const t = db.prepare('SELECT * FROM tasks WHERE id=?').get(id)
   if (!t) return res.status(404).json({ error: 'tidak ada' })
+  if (t.mode === 'claude') {
+    if (!isOwner(req)) return res.status(403).json({ error: 'hanya dari komputer ini' })
+    if (t.status === 'in_progress' && t.session_id) sessions.stop(t.session_id)
+  }
   // kalau sedang dikerjakan, bebaskan agent-nya
   for (const a of agents.values()) {
     if (a.task === id) { a.task = null; a.state = 'idle'; a.bubble = null }
@@ -568,7 +575,7 @@ const KANTOR_TOKEN = crypto.randomBytes(16).toString('hex')
 const PROJECTS_FILE = process.env.KANTOR_PROJECTS ?? path.join(__dirname, 'projects.json')
 // array yang sama dipegang mesin sesi, jadi daftar diganti di tempat (splice), bukan dengan array baru
 const projects = loadProjects(PROJECTS_FILE)
-const projectList = () => projects.map(({ id, name, path: dir }) => ({ id, name, path: dir }))
+const projectList = () => projects.map(({ id, name, path: dir, checks }) => ({ id, name, path: dir, checks }))
 const liveKey = (s) => `sess-${s.id}-${s.runs}`
 const sessions = createSessions({
   projects,
@@ -576,7 +583,17 @@ const sessions = createSessions({
   hooks: {
     onStart: (s) => { liveStart(liveKey(s), s.projectName) },
     onTool: (s, text) => liveTool(liveKey(s), s.projectName, text),
-    onStop: (s) => liveStop(`live-${liveKey(s)}`, { done: DONE, stopped: 'Dihentikan', error: 'Gagal' }[s.state]),
+    onStop: (s) => {
+      liveStop(`live-${liveKey(s)}`, { done: DONE, stopped: 'Dihentikan', error: 'Gagal' }[s.state])
+      finishClaudeTask(s)
+    },
+    // subagent yang dipanggil sesi tampil sebagai karakter tamu sendiri, dibaca dari stream sesi (tanpa hook terpasang)
+    onSubagent: (s, ev) => {
+      const id = `${liveKey(s)}-${ev.id}`
+      if (ev.kind === 'start') liveStart(id, ev.type)
+      else if (ev.kind === 'tool') liveTool(id, ev.type, ev.text)
+      else liveStop(`live-${id}`)
+    },
     onChange: () => broadcast({ type: 'sessions' }), // sinyal saja: isi sesi diambil lewat REST yang berpenjaga
   },
 })
@@ -590,16 +607,27 @@ const control = (needToken) => (req, res, next) => {
   )
   return why ? res.status(403).json({ error: why }) : next()
 }
+const isOwner = (req) => checkControl(
+  { remoteAddress: req.socket.remoteAddress, host: req.headers.host, origin: req.headers.origin, token: '' },
+  KANTOR_TOKEN,
+  { needToken: false },
+) === null
 // dashboard meminta token dan daftar proyek di sini; pemain dari jaringan mendapat 403 dan panel sesi tersembunyi
 app.get('/api/control', control(false), (_req, res) => res.json({ token: KANTOR_TOKEN, projects: projects.map(({ id, name }) => ({ id, name })) }))
 // Daftar proyek bisa diubah dari dashboard dengan penjaga yang sama dengan sesi (komputer ini, Host dan Origin lokal, token).
 // Alamat folder datang dari klien, jadi addProject memeriksa bahwa itu folder lengkap yang ada; izin tool tetap bawaan.
 app.get('/api/projects', control(true), (_req, res) => res.json(projectList()))
 app.post('/api/projects', control(true), (req, res) => {
-  const r = addProject(PROJECTS_FILE, { name: req.body?.name, path: req.body?.path })
+  const r = addProject(PROJECTS_FILE, { name: req.body?.name, path: req.body?.path, checks: req.body?.checks === true })
   if (r.error) return res.status(400).json(r)
   projects.splice(0, projects.length, ...loadProjects(PROJECTS_FILE))
   return res.status(201).json(projectList())
+})
+app.patch('/api/projects/:id', control(true), (req, res) => {
+  const r = setProjectChecks(PROJECTS_FILE, req.params.id, req.body?.checks === true)
+  if (r.error) return res.status(400).json(r)
+  projects.splice(0, projects.length, ...loadProjects(PROJECTS_FILE))
+  return res.json(projectList())
 })
 app.delete('/api/projects/:id', control(true), (req, res) => {
   if (sessions.list().some((s) => s.projectId === req.params.id && (s.state === 'running' || s.state === 'stopping'))) {
@@ -610,6 +638,93 @@ app.delete('/api/projects/:id', control(true), (req, res) => {
   projects.splice(0, projects.length, ...loadProjects(PROJECTS_FILE))
   return res.json(projectList())
 })
+// ---- task yang dikerjakan Claude Code ----
+// Dibuat dan diputuskan hanya lewat penjaga yang sama dengan sesi. Sesi berjalan dengan subagent kit
+// (.claude/agents), batas biaya per task, dan hasilnya hanya tampil di komputer ini (lihat publicTask).
+const KIT_DIR = path.join(__dirname, '..', '.claude', 'agents')
+const BUDGET = Number(process.env.KANTOR_MAX_BUDGET)
+const MAX_BUDGET = Number.isFinite(BUDGET) && BUDGET > 0 ? BUDGET : 2
+
+function claudeRun() {
+  const kit = loadKitAgents(KIT_DIR)
+  if (!Object.keys(kit).length) return { budget: MAX_BUDGET }
+  return { budget: MAX_BUDGET, agentsFile: writeAgentsFile(kit), appendPrompt: orchestrationPrompt(kit) }
+}
+
+// keepSession: sesi yang selesai normal tetap tersimpan di task, karena Revisi melanjutkannya (--resume)
+const toReview = (t, note, detail = null, keepSession = false) => {
+  updateTask(t.id, { status: 'review', session_id: keepSession ? t.session_id : null, output: note, detail })
+  broadcast({ type: 'task-update' })
+}
+
+// task Claude di antrian jalan satu per satu sampai batas sesi; sisanya menunggu
+function dispatchClaude() {
+  for (const t of getTasksByStatus('todo')) {
+    if (t.mode !== 'claude') continue
+    if (!projects.some((p) => p.id === t.project_id)) { toReview(t, 'Proyek sudah tidak ada di daftar.'); continue }
+    const r = sessions.start({ projectId: t.project_id, prompt: t.prompt || t.title, run: claudeRun() })
+    if (r.busy) break
+    if (r.error) { toReview(t, 'Gagal dimulai.', r.error); continue }
+    updateTask(t.id, { status: 'in_progress', session_id: r.id, output: null, detail: null })
+    broadcast({ type: 'task-update' })
+  }
+}
+
+// sesi selesai, gagal, atau dihentikan: task menunggu keputusan di kolom Review
+function finishClaudeTask(s) {
+  const t = getRunningTaskBySession(s.id)
+  if (!t) return
+  const note = { done: 'Selesai, menunggu persetujuan', stopped: 'Dihentikan', error: 'Gagal, perlu dicek' }[s.state] ?? 'Selesai'
+  const denied = s.result?.denials ? `, ${s.result.denials} izin ditolak` : ''
+  toReview(t, note + denied, s.state === 'error' ? (s.error ?? null) : (s.result?.text || s.lastText || null), true)
+}
+
+const claudeTask = (req, res, need) => {
+  const t = getTask(Number(req.params.id))
+  if (!t || t.mode !== 'claude') { res.status(404).json({ error: 'task Claude tidak ada' }); return null }
+  if (t.status !== need) { res.status(400).json({ error: `task harus di kolom ${need}` }); return null }
+  return t
+}
+
+app.post('/api/tasks/claude', control(true), (req, res) => {
+  const title = typeof req.body?.title === 'string' ? req.body.title.trim().slice(0, 80) : ''
+  const given = typeof req.body?.prompt === 'string' ? req.body.prompt.trim() : ''
+  const prompt = given || title
+  if (!title) return res.status(400).json({ error: 'judul wajib' })
+  if (!projects.some((p) => p.id === req.body?.projectId)) return res.status(400).json({ error: 'proyek tidak dikenal' })
+  if (prompt.length > MAX_PROMPT) return res.status(400).json({ error: `instruksi terlalu panjang (maksimal ${MAX_PROMPT} huruf)` })
+  if (prompt.startsWith('-')) return res.status(400).json({ error: 'instruksi tidak boleh diawali tanda minus' })
+  const info = insertClaudeTask(title, req.body.projectId, prompt)
+  broadcast({ type: 'task-update' })
+  dispatchClaude()
+  res.status(201).json(getTask(info.lastInsertRowid))
+})
+app.post('/api/tasks/:id/approve', control(true), (req, res) => {
+  const t = claudeTask(req, res, 'review')
+  if (!t) return
+  updateTask(t.id, { status: 'done', finished_at: new Date().toISOString() })
+  broadcast({ type: 'task-update' })
+  res.json({ ok: true })
+})
+app.post('/api/tasks/:id/retry', control(true), (req, res) => {
+  const t = claudeTask(req, res, 'review')
+  if (!t) return
+  updateTask(t.id, { status: 'todo', session_id: null, output: null, detail: null })
+  broadcast({ type: 'task-update' })
+  dispatchClaude()
+  res.json({ ok: true })
+})
+app.post('/api/tasks/:id/revise', control(true), (req, res) => {
+  const t = claudeTask(req, res, 'review')
+  if (!t) return
+  if (!t.session_id) return res.status(400).json({ error: 'sesinya sudah hilang, pilih Ulangi' })
+  const r = sessions.continueSession(t.session_id, req.body?.note)
+  if (r.error) return res.status(400).json(r)
+  updateTask(t.id, { status: 'in_progress', output: null })
+  broadcast({ type: 'task-update' })
+  res.json({ ok: true })
+})
+
 app.get('/api/sessions', control(true), (_req, res) => res.json(sessions.list()))
 app.post('/api/sessions', control(true), (req, res) => {
   const r = sessions.start({ projectId: req.body?.projectId, prompt: req.body?.prompt })

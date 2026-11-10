@@ -4,7 +4,9 @@ import path from 'node:path'
 // Hanya folder yang didaftarkan di sini yang boleh dipakai sesi. Folder lain tidak bisa dipilih dari dashboard.
 // Izin awal sengaja sempit: membaca dan mengedit file. Perintah shell tidak diizinkan kecuali ditambahkan
 // lewat "allowedTools" per proyek.
-export const DEFAULT_TOOLS = ['Read', 'Grep', 'Glob', 'Edit', 'Write']
+export const DEFAULT_TOOLS = ['Read', 'Grep', 'Glob', 'Edit', 'Write', 'Agent']
+// Dua perintah tetap yang boleh dijalankan di proyek yang dicentang "tes dan build". Form hanya mengirim centang.
+export const CHECK_TOOLS = ['Bash(npm test)', 'Bash(npm run build)']
 const TOOL_OK = /^[\w(),:* ./-]+$/
 export const MAX_PROJECTS = 20
 const NAME_MAX = 40
@@ -25,7 +27,9 @@ export function loadProjects(file) {
     const id = slug(name) || `p${out.length + 1}`
     if (out.some((o) => o.id === id)) continue
     const tools = Array.isArray(p.allowedTools) ? p.allowedTools.filter((t) => typeof t === 'string' && TOOL_OK.test(t)).slice(0, 20) : []
-    out.push({ id, name, path: dir, allowedTools: tools.length ? tools : DEFAULT_TOOLS })
+    const checks = p.checks === true
+    const base = tools.length ? tools : DEFAULT_TOOLS
+    out.push({ id, name, path: dir, checks, allowedTools: checks ? [...new Set([...base, ...CHECK_TOOLS])] : base })
   }
   return out
 }
@@ -67,7 +71,19 @@ export function addProject(file, input) {
     if (typeof r?.name === 'string' && slug(r.name.trim().slice(0, NAME_MAX)) === id) return { error: 'nama itu sudah dipakai proyek lain' }
     if (typeof r?.path === 'string' && r.path.trim() && sameDir(path.resolve(r.path), dir)) return { error: 'folder itu sudah terdaftar' }
   }
-  raw.push({ name, path: dir })
+  raw.push(input?.checks === true ? { name, path: dir, checks: true } : { name, path: dir })
+  writeRaw(file, raw)
+  return { id }
+}
+
+// Mengubah izin "tes dan build" proyek yang sudah ada.
+export function setProjectChecks(file, id, checks) {
+  const raw = readRaw(file)
+  if (raw === null) return { error: BROKEN }
+  const at = raw.findIndex((r) => typeof r?.name === 'string' && slug(r.name.trim().slice(0, NAME_MAX)) === id)
+  if (at < 0) return { error: 'proyek tidak ditemukan' }
+  if (checks === true) raw[at].checks = true
+  else delete raw[at].checks
   writeRaw(file, raw)
   return { id }
 }

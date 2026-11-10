@@ -1,56 +1,23 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState } from 'react'
 
 const STATE_LABEL = { running: 'Berjalan', stopping: 'Menghentikan', done: 'Selesai', error: 'Gagal', stopped: 'Dihentikan' }
 
-// Panel sesi Claude Code: pilih proyek terdaftar, tulis tugas, lihat dan hentikan sesi yang berjalan.
-// Hanya muncul di komputer yang menjalankan server (pemain lain dari jaringan mendapat 403 dan tidak melihatnya).
-export function Sessions({ tick }) {
-  const [ctl, setCtl] = useState(null) // null: memuat, 'off': tidak tersedia, objek: { token, projects }
+// Panel sesi Claude Code: kelola proyek, tulis tugas, lihat dan hentikan sesi yang berjalan.
+// Data dan token datang dari useControl; di luar komputer yang menjalankan server panel ini tidak tampil.
+export function Sessions({ control }) {
+  const { on, call, projects, setProjects, sessions: list, error, setError, reload } = control
   const [open, setOpen] = useState(false)
-  const [list, setList] = useState(null)
-  const [error, setError] = useState('')
-  const [projects, setProjects] = useState([]) // { id, name, path }; diubah lewat form "Kelola proyek"
   const [projectId, setProjectId] = useState('')
   const [pname, setPname] = useState('')
   const [ppath, setPpath] = useState('')
+  const [pchecks, setPchecks] = useState(false)
   const [prompt, setPrompt] = useState('')
   const [busy, setBusy] = useState(false)
   const [cont, setCont] = useState(null) // { id, text }
+  // pilihan di form tugas mengikuti daftar: bila belum dipilih atau proyeknya dihapus, pakai yang pertama
+  const chosen = projects.some((p) => p.id === projectId) ? projectId : (projects[0]?.id ?? '')
 
-  useEffect(() => {
-    fetch('/api/control')
-      .then((r) => (r.ok ? r.json() : 'off'))
-      .then((c) => { setCtl(c); if (c !== 'off' && c.projects[0]) setProjectId(c.projects[0].id) })
-      .catch(() => setCtl('off'))
-  }, [])
-
-  const token = ctl && ctl !== 'off' ? ctl.token : null
-  const call = useCallback((method, url, body) => fetch(url, {
-    method,
-    headers: { 'Content-Type': 'application/json', 'X-Kantor-Token': token },
-    body: body ? JSON.stringify(body) : undefined,
-  }), [token])
-
-  const load = useCallback(() => {
-    if (!token) return
-    call('GET', '/api/sessions')
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('ditolak'))))
-      .then((l) => { setList(l); setError('') })
-      .catch(() => setError('Server tidak menjawab atau menolak permintaan.'))
-  }, [token, call])
-
-  useEffect(() => {
-    if (!token) return
-    call('GET', '/api/projects')
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('ditolak'))))
-      .then(setProjects)
-      .catch(() => setError('Daftar proyek tidak bisa dimuat.'))
-  }, [token, call])
-
-  // muat saat panel dibuka dan tiap server memberi sinyal bahwa sesi berubah
-  useEffect(() => { if (open) load() }, [open, tick, load])
-
-  if (ctl === null || ctl === 'off') return null
+  if (!on) return null
 
   const act = async (method, url, body) => {
     setBusy(true)
@@ -59,6 +26,7 @@ export function Sessions({ tick }) {
       const j = await r.json().catch(() => ({}))
       if (!r.ok) { setError(j.error ?? 'Permintaan gagal'); return false }
       setError('')
+      reload()
       return true
     } catch {
       setError('Server tidak terjangkau')
@@ -77,7 +45,6 @@ export function Sessions({ tick }) {
       if (!r.ok) { setError(j.error ?? 'Permintaan gagal'); return false }
       setError('')
       setProjects(j)
-      setProjectId((cur) => (j.some((p) => p.id === cur) ? cur : (j[0]?.id ?? '')))
       return true
     } catch {
       setError('Server tidak terjangkau')
@@ -90,13 +57,13 @@ export function Sessions({ tick }) {
   const addProject = async (e) => {
     e.preventDefault()
     if (!pname.trim() || !ppath.trim() || busy) return
-    if (await changeProjects('POST', '/api/projects', { name: pname, path: ppath })) { setPname(''); setPpath('') }
+    if (await changeProjects('POST', '/api/projects', { name: pname, path: ppath, checks: pchecks })) { setPname(''); setPpath(''); setPchecks(false) }
   }
 
   const start = async (e) => {
     e.preventDefault()
     if (!prompt.trim() || busy) return
-    if (await act('POST', '/api/sessions', { projectId, prompt })) setPrompt('')
+    if (await act('POST', '/api/sessions', { projectId: chosen, prompt })) setPrompt('')
   }
 
   const resume = async (e, id) => {
@@ -123,7 +90,19 @@ export function Sessions({ tick }) {
               <ul className="plist">
                 {projects.map((p) => (
                   <li key={p.id} className="prow">
-                    <span>{p.name}<small>{p.path}</small></span>
+                    <span>
+                      {p.name}
+                      <small>{p.path}</small>
+                      <label className="pcheck">
+                        <input
+                          type="checkbox"
+                          checked={p.checks}
+                          disabled={busy}
+                          onChange={(e) => changeProjects('PATCH', `/api/projects/${encodeURIComponent(p.id)}`, { checks: e.target.checked })}
+                        />
+                        Izinkan tes dan build
+                      </label>
+                    </span>
                     <button
                       type="button"
                       className="btn sm"
@@ -154,15 +133,20 @@ export function Sessions({ tick }) {
                 placeholder="Alamat folder, misalnya D:/Kodingan/proyek-satu"
                 aria-label="Alamat folder"
               />
+              <label className="pcheck">
+                <input type="checkbox" checked={pchecks} onChange={(e) => setPchecks(e.target.checked)} />
+                Izinkan tes dan build
+              </label>
               <button type="submit" className="btn sm" disabled={busy || !pname.trim() || !ppath.trim()}>Tambah proyek</button>
             </form>
             <p className="note">
-              Claude hanya boleh membaca dan mengedit file di folder ini, tanpa perintah shell. Hapus hanya mencabut dari daftar, foldernya tetap ada.
+              Claude membaca dan mengedit file di folder ini. Perintah shell hanya npm test dan npm run build, dan hanya bila dicentang.
+              Hapus hanya mencabut dari daftar, foldernya tetap ada.
             </p>
           </details>
           {projects.length > 0 && (
             <form className="sform" onSubmit={start}>
-              <select className="field" value={projectId} onChange={(e) => setProjectId(e.target.value)} aria-label="Proyek">
+              <select className="field" value={chosen} onChange={(e) => setProjectId(e.target.value)} aria-label="Proyek">
                 {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
               </select>
               <textarea

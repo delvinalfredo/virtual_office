@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { addProject, removeProject, loadProjects, DEFAULT_TOOLS } from './projects.js'
+import { addProject, removeProject, setProjectChecks, loadProjects, DEFAULT_TOOLS, CHECK_TOOLS } from './projects.js'
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kantor-proj-'))
 const dirA = path.join(tmp, 'a'); const dirB = path.join(tmp, 'b')
@@ -84,4 +84,27 @@ test('menghapus proyek: hanya yang dituju, folder tidak disentuh, id tak dikenal
   assert.equal(fs.existsSync(dirA), true)
   assert.match(removeProject(f, 'satu').error, /tidak ditemukan/)
   assert.match(removeProject(file(), 'apa').error, /tidak ditemukan/)
+})
+
+test('izin tes dan build: hanya dua perintah tetap, dan bisa dinyalakan serta dimatikan', () => {
+  const f = file()
+  addProject(f, { name: 'Biasa', path: dirA })
+  addProject(f, { name: 'Dicentang', path: dirB, checks: true })
+  const byId = () => Object.fromEntries(loadProjects(f).map((p) => [p.id, p]))
+  assert.deepEqual(byId().biasa.allowedTools, DEFAULT_TOOLS)
+  assert.deepEqual(byId().dicentang.allowedTools, [...DEFAULT_TOOLS, ...CHECK_TOOLS])
+  assert.deepEqual(CHECK_TOOLS, ['Bash(npm test)', 'Bash(npm run build)'])
+  assert.equal(byId().dicentang.checks, true)
+
+  setProjectChecks(f, 'biasa', true)
+  assert.deepEqual(byId().biasa.allowedTools, [...DEFAULT_TOOLS, ...CHECK_TOOLS])
+  setProjectChecks(f, 'biasa', false)
+  assert.deepEqual(byId().biasa.allowedTools, DEFAULT_TOOLS)
+  assert.match(setProjectChecks(f, 'tidak-ada', true).error, /tidak ditemukan/)
+})
+
+test('izin khusus di berkas digabung dengan tes dan build, tanpa dobel', () => {
+  const f = file()
+  fs.writeFileSync(f, JSON.stringify([{ name: 'Khusus', path: dirA, checks: true, allowedTools: ['Read', 'Bash(npm test)'] }]))
+  assert.deepEqual(loadProjects(f)[0].allowedTools, ['Read', 'Bash(npm test)', 'Bash(npm run build)'])
 })

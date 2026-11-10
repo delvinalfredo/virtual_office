@@ -28,6 +28,13 @@ CREATE TABLE IF NOT EXISTS tasks (
 );
 `)
 
+// Kolom untuk task yang dikerjakan Claude Code. Database lama ditambah kolomnya saat server mulai.
+//   mode: 'sim' (agent simulasi) atau 'claude'; prompt, detail, session_id, project_id hanya dilihat pemilik komputer
+const have = new Set(db.prepare('PRAGMA table_info(tasks)').all().map((c) => c.name))
+for (const [name, def] of [['mode', "TEXT NOT NULL DEFAULT 'sim'"], ['project_id', 'TEXT'], ['session_id', 'TEXT'], ['prompt', 'TEXT'], ['detail', 'TEXT']]) {
+  if (!have.has(name)) db.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${def}`)
+}
+
 // seed agents hanya sekali (tabel agents awalnya kosong)
 const n = db.prepare('SELECT COUNT(*) c FROM agents').get().c
 if (n === 0) {
@@ -49,14 +56,33 @@ export const getTasksByStatus = (status) =>
 
 // state agent hanya di memori, jadi sesudah restart task in_progress tidak ada yang mengerjakan.
 // review milik lead balik ke antrian review, sisanya balik ke todo.
+// Task Claude yang sedang jalan tidak diulang otomatis (menghabiskan token): masuk review dengan catatan.
+// Semua sesi hilang saat restart, jadi id sesi di task Claude dikosongkan (id sesi dipakai ulang mulai dari s1).
+export const RESTART_NOTE = 'Sesi terputus karena server dimulai ulang. Pilih Ulangi untuk menjalankan lagi.'
 export const recoverStuckTasks = () => {
+  const claude = db.prepare(
+    "UPDATE tasks SET status='review', output=? WHERE status='in_progress' AND mode='claude'"
+  ).run(RESTART_NOTE).changes
+  db.prepare("UPDATE tasks SET session_id=NULL WHERE mode='claude'").run()
   const review = db.prepare(
-    "UPDATE tasks SET status='review', progress=est WHERE status='in_progress' AND agent_id='lead'"
+    "UPDATE tasks SET status='review', progress=est WHERE status='in_progress' AND agent_id='lead' AND mode='sim'"
   ).run().changes
   const todo = db.prepare(
-    "UPDATE tasks SET status='todo', agent_id=NULL, progress=0 WHERE status='in_progress'"
+    "UPDATE tasks SET status='todo', agent_id=NULL, progress=0 WHERE status='in_progress' AND mode='sim'"
   ).run().changes
-  return { review, todo }
+  return { review, todo, claude }
+}
+
+export const getTask = (id) => db.prepare('SELECT * FROM tasks WHERE id=?').get(id)
+// hanya task yang sedang jalan yang dicari lewat sesi, supaya id sesi lama tidak salah sasaran
+export const getRunningTaskBySession = (sid) =>
+  db.prepare("SELECT * FROM tasks WHERE session_id=? AND status='in_progress' AND mode='claude'").get(sid)
+export const insertClaudeTask = (title, projectId, prompt) =>
+  db.prepare("INSERT INTO tasks (title, mode, project_id, prompt) VALUES (?, 'claude', ?, ?)").run(title, projectId, prompt)
+// tampilan untuk semua pemain di jaringan: tanpa instruksi, hasil, proyek, dan id sesi milik pemilik
+export const publicTask = (t) => {
+  const { prompt: _prompt, detail: _detail, session_id: _session, project_id: _project, ...rest } = t
+  return rest
 }
 
 export const insertTask = (title, est) =>

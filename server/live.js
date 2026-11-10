@@ -3,7 +3,7 @@
 // tool, nama file tanpa folder, dan kata pertama perintah, semuanya dipendekkan dan dibersihkan.
 // Isi file dan teks perintah lengkap tidak pernah disimpan atau ditampilkan.
 
-const clean = (v, max) => (typeof v === 'string' ? v.replace(/[^\w .:/-]/g, '').trim().slice(0, max) : '')
+export const clean = (v, max) => (typeof v === 'string' ? v.replace(/[^\w .:/-]/g, '').trim().slice(0, max) : '')
 const baseName = (p) => (typeof p === 'string' ? clean(p.split(/[\\/]/).pop(), 40) : '')
 
 export function describeTool(name, input) {

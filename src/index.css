@@ -141,6 +141,10 @@ button { cursor: pointer; }
   padding: 4px 8px; margin-bottom: var(--s2); width: 100%; text-align: left;
 }
 .tcard.open { cursor: pointer; }
+.board.wide { max-width: 760px; }
+.tcard.claude { align-items: flex-start; }
+.tcard.claude .title { white-space: normal; overflow-wrap: anywhere; }
+.tact .btn.sm { min-height: 28px; min-width: 0; padding: 2px 2px; font-size: 11px; border-width: 2px; }
 .tcard .body { flex: 1; min-width: 0; }
 .tcard .title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tcard .who { font-size: 11px; color: var(--muted); font-weight: 700; }
@@ -197,6 +201,13 @@ button { cursor: pointer; }
 .dialog h2 { margin: 0 0 4px; font-size: 18px; font-weight: 900; }
 .dialog .meta { font-size: 12px; color: var(--muted); margin-bottom: var(--s3); font-weight: 700; }
 .dialog pre { background: var(--col-todo); border: 2px solid var(--ink); border-radius: 8px; padding: var(--s3); font: 12px/1.45 ui-monospace, Consolas, monospace; white-space: pre-wrap; margin: 0 0 var(--s3); }
+.tlive { font-size: 11px; font-weight: 700; color: var(--muted); margin-top: var(--s1); overflow-wrap: anywhere; }
+.tnote { font-size: 11px; font-weight: 700; margin-top: var(--s1); overflow-wrap: anywhere; }
+.tnote.bad { color: var(--danger); }
+.tact { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s1); margin-top: var(--s2); }
+.trev { display: grid; gap: var(--s1); margin-top: var(--s2); }
+.trev textarea.field, .taskform textarea.field { resize: vertical; min-height: 36px; font-size: 13px; }
+.taskform textarea.field { width: 260px; }
 .who-head { display: flex; align-items: center; gap: var(--s3); margin-bottom: var(--s3); }
 .badge { display: grid; place-items: center; width: 40px; height: 40px; background: var(--tag); border: 3px solid var(--ink); border-radius: 10px; font-weight: 900; }
 .who-head small { display: block; font-size: 12px; color: var(--muted); font-weight: 700; }
@@ -232,6 +243,8 @@ button { cursor: pointer; }
 .prow span { min-width: 0; overflow-wrap: anywhere; font-weight: 800; }
 .prow small { display: block; color: var(--muted); font-weight: 600; }
 .pmanage .sform { margin-bottom: var(--s2); }
+.pcheck { display: flex; align-items: center; gap: var(--s1); font-size: 12px; font-weight: 700; color: var(--muted); }
+.prow .pcheck { margin-top: var(--s1); }
 
 .perf { position: fixed; top: var(--s3); right: 50%; transform: translateX(50%); z-index: 60; padding: var(--s1) var(--s3); font-size: 12px; font-weight: 800; pointer-events: none; }
 

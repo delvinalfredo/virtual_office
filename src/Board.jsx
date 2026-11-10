@@ -36,9 +36,16 @@ function StatsPanel() {
   )
 }
 
-export function Board({ tasks, onDelete }) {
+const CLAUDE = 'Claude Code'
+
+// Papan Kanban. Task Claude Code tampil untuk semua pemain (judul dan status), tetapi proyek, kemajuan sesi,
+// hasil, dan tombol keputusan hanya muncul di komputer pemilik (control.on).
+export function Board({ tasks, onDelete, control }) {
   const [open, setOpen] = useState(null)
   const [showStats, setShowStats] = useState(false)
+  const [revise, setRevise] = useState(null) // { id, text }
+  const [cardError, setCardError] = useState(null) // { id, text }
+  const [busy, setBusy] = useState(false)
   const closeRef = useRef(null)
 
   // dialog hasil task: fokus ke tombol tutup, Escape menutup
@@ -49,6 +56,31 @@ export function Board({ tasks, onDelete }) {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [open])
+
+  const projectName = (id) => control.projects.find((p) => p.id === id)?.name ?? id
+
+  // keputusan pemilik atas task Claude; daftar task diperbarui server lewat sinyal task-update
+  const decide = async (id, action, body) => {
+    setBusy(true)
+    try {
+      const r = await control.call('POST', `/api/tasks/${id}/${action}`, body)
+      const j = await r.json().catch(() => ({}))
+      if (!r.ok) { setCardError({ id, text: j.error ?? 'Permintaan gagal' }); return false }
+      setCardError(null)
+      return true
+    } catch {
+      setCardError({ id, text: 'Server tidak terjangkau' })
+      return false
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const sendRevision = async (e, id) => {
+    e.preventDefault()
+    if (!revise?.text.trim() || busy) return
+    if (await decide(id, 'revise', { note: revise.text })) setRevise(null)
+  }
 
   return (
     <>
@@ -61,7 +93,7 @@ export function Board({ tasks, onDelete }) {
       </button>
       {showStats && <StatsPanel />}
 
-      <div className="board">
+      <div className={`board${tasks.some((t) => t.mode === 'claude') ? ' wide' : ''}`}>
         {COLS.map((c) => {
           const items = tasks.filter((t) => t.status === c.key)
           return (
@@ -69,12 +101,16 @@ export function Board({ tasks, onDelete }) {
               <h3>{c.label} <span>{items.length}</span></h3>
               {items.length === 0 && <p className="empty">Kosong</p>}
               {items.map((t) => {
+                const claude = t.mode === 'claude'
+                const mine = claude && control.on
+                const session = mine && t.status === 'in_progress' ? control.sessions?.find((s) => s.id === t.session_id) : null
+                const subagents = (session?.subagents ?? []).filter((x) => x.state === 'running').map((x) => x.type)
                 const canOpen = t.status === 'done'
-                const canDelete = t.status === 'todo' || t.status === 'done'
+                const canDelete = t.status === 'todo' || t.status === 'done' || (mine && t.status === 'review')
                 return (
                   <div
                     key={t.id}
-                    className={`tcard${canOpen ? ' open' : ''}`}
+                    className={`tcard${canOpen ? ' open' : ''}${claude ? ' claude' : ''}`}
                     {...(canOpen && {
                       role: 'button',
                       tabIndex: 0,
@@ -85,10 +121,46 @@ export function Board({ tasks, onDelete }) {
                   >
                     <div className="body">
                       <div className="title">{t.title}</div>
-                      {t.status === 'in_progress' && (
+                      {t.status === 'in_progress' && !claude && (
                         <div className="bar"><i style={{ transform: `scaleX(${Math.min(1, t.progress / t.est)})` }} /></div>
                       )}
                       {t.agent_id && <div className="who">@{t.agent_id}</div>}
+                      {claude && <div className="who">{CLAUDE}{mine && t.project_id ? `, ${projectName(t.project_id)}` : ''}</div>}
+                      {claude && t.status === 'in_progress' && (
+                        <div className="tlive">
+                          {session
+                            ? `${session.activity}${session.tools ? `, ${session.tools} tool` : ''}${subagents.length ? `. Subagent: ${subagents.join(', ')}` : ''}`
+                            : 'Sedang dikerjakan'}
+                        </div>
+                      )}
+                      {claude && t.status === 'review' && t.output && <div className="tnote">{t.output}</div>}
+                      {mine && t.status === 'review' && (
+                        <div className="tact">
+                          <button className="btn sm go" disabled={busy} onClick={() => decide(t.id, 'approve')}>Setujui</button>
+                          {t.session_id && (
+                            <button className="btn sm" aria-expanded={revise?.id === t.id} onClick={() => setRevise(revise?.id === t.id ? null : { id: t.id, text: '' })}>
+                              Revisi
+                            </button>
+                          )}
+                          <button className="btn sm" disabled={busy} onClick={() => decide(t.id, 'retry')}>Ulangi</button>
+                          {t.detail && <button className="btn sm" aria-label={`Lihat hasil: ${t.title}`} onClick={() => setOpen(t)}>Hasil</button>}
+                        </div>
+                      )}
+                      {mine && revise?.id === t.id && (
+                        <form className="trev" onSubmit={(e) => sendRevision(e, t.id)}>
+                          <textarea
+                            className="field"
+                            rows={2}
+                            value={revise.text}
+                            maxLength={4000}
+                            onChange={(e) => setRevise({ id: t.id, text: e.target.value })}
+                            placeholder="Apa yang perlu diperbaiki"
+                            aria-label={`Catatan revisi: ${t.title}`}
+                          />
+                          <button type="submit" className="btn sm go" disabled={busy || !revise.text.trim()}>Kirim revisi</button>
+                        </form>
+                      )}
+                      {cardError?.id === t.id && <div role="alert" className="tnote bad">{cardError.text}</div>}
                     </div>
                     {canDelete && (
                       <button
@@ -113,9 +185,11 @@ export function Board({ tasks, onDelete }) {
           <div className="dialog panel" role="dialog" aria-modal="true" aria-label={open.title} onClick={(e) => e.stopPropagation()}>
             <h2>{open.title}</h2>
             <div className="meta">
-              @{open.agent_id}, selesai {open.finished_at ? new Date(open.finished_at).toLocaleTimeString() : 'belum tercatat'}
+              {open.mode === 'claude' ? CLAUDE : `@${open.agent_id}`}, {open.finished_at
+                ? `selesai ${new Date(open.finished_at).toLocaleTimeString()}`
+                : open.status === 'review' ? 'menunggu keputusan' : 'belum tercatat'}
             </div>
-            <pre>{open.output || '(tidak ada output)'}</pre>
+            <pre>{(open.mode === 'claude' && open.detail) || open.output || '(tidak ada output)'}</pre>
             <button ref={closeRef} className="btn go" onClick={() => setOpen(null)}>Tutup</button>
           </div>
         </div>
@@ -124,22 +198,42 @@ export function Board({ tasks, onDelete }) {
   )
 }
 
-export function TaskForm({ onAdd }) {
+// Form task. Pilihan "Claude Code" hanya ada di komputer pemilik, dan butuh proyek terdaftar.
+export function TaskForm({ onAdd, control }) {
   const [title, setTitle] = useState('')
   const [est, setEst] = useState(6)
+  const [who, setWho] = useState('sim') // 'sim' | 'claude'
+  const [projectId, setProjectId] = useState('')
+  const [prompt, setPrompt] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+
+  const canClaude = control.on && control.projects.length > 0
+  const claude = who === 'claude' && canClaude
+  const chosen = control.projects.some((p) => p.id === projectId) ? projectId : (control.projects[0]?.id ?? '')
+
+  const addClaude = async () => {
+    try {
+      const r = await control.call('POST', '/api/tasks/claude', { title: title.trim(), projectId: chosen, prompt })
+      if (r.ok) return { ok: true }
+      const body = await r.json().catch(() => ({}))
+      return { ok: false, error: body.error ?? 'task gagal ditambahkan' }
+    } catch {
+      return { ok: false, error: 'server tidak terjangkau' }
+    }
+  }
 
   const submit = async (e) => {
     e.preventDefault()
     if (!title.trim() || busy) return
     setBusy(true)
-    const res = await onAdd(title.trim(), est)
+    const res = claude ? await addClaude() : await onAdd(title.trim(), est)
     setBusy(false)
     // gagal: judul tetap di kolom supaya tidak perlu diketik ulang
     if (res?.ok === false) return setError(res.error)
     setError('')
     setTitle('')
+    setPrompt('')
   }
 
   return (
@@ -153,11 +247,34 @@ export function TaskForm({ onAdd }) {
         aria-label="Judul task baru"
         maxLength={80}
       />
-      <select className="field" value={est} onChange={(e) => setEst(Number(e.target.value))} aria-label="Estimasi pengerjaan">
-        {[3, 6, 12, 20].map((s) => (
-          <option key={s} value={s}>{s} detik</option>
-        ))}
-      </select>
+      {control.on && (
+        <select className="field" value={claude ? 'claude' : 'sim'} onChange={(e) => setWho(e.target.value)} aria-label="Dikerjakan oleh">
+          <option value="sim">Agent simulasi</option>
+          <option value="claude" disabled={!canClaude}>{canClaude ? CLAUDE : `${CLAUDE} (tambah proyek dulu)`}</option>
+        </select>
+      )}
+      {claude ? (
+        <>
+          <select className="field" value={chosen} onChange={(e) => setProjectId(e.target.value)} aria-label="Proyek untuk Claude Code">
+            {control.projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+          <textarea
+            className="field"
+            rows={2}
+            value={prompt}
+            maxLength={4000}
+            onChange={(e) => setPrompt(e.target.value)}
+            placeholder="Instruksi rinci (kosong: pakai judul)"
+            aria-label="Instruksi untuk Claude Code"
+          />
+        </>
+      ) : (
+        <select className="field" value={est} onChange={(e) => setEst(Number(e.target.value))} aria-label="Estimasi pengerjaan">
+          {[3, 6, 12, 20].map((s) => (
+            <option key={s} value={s}>{s} detik</option>
+          ))}
+        </select>
+      )}
       <button type="submit" className="btn go" disabled={busy}>Tambah task</button>
     </form>
   )

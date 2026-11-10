@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 
 // env harus terpasang sebelum db.js dimuat, makanya import dinamis
 process.env.KANTOR_DB = ':memory:'
-const { default: db, insertTask, updateTask, getTasksByStatus, recoverStuckTasks } = await import('./db.js')
+const { default: db, insertTask, insertClaudeTask, updateTask, getTasksByStatus, getRunningTaskBySession, recoverStuckTasks, publicTask, RESTART_NOTE } = await import('./db.js')
 
 const add = (title, est = 5) => Number(insertTask(title, est).lastInsertRowid)
 const row = (id) => db.prepare('SELECT * FROM tasks WHERE id=?').get(id)
@@ -25,7 +25,7 @@ test('recoverStuckTasks: task worker balik ke todo, review lead balik ke review'
   const finished = add('sudah selesai')
   updateTask(finished, { status: 'done', agent_id: 'qa' })
 
-  assert.deepEqual(recoverStuckTasks(), { review: 1, todo: 1 })
+  assert.deepEqual(recoverStuckTasks(), { review: 1, todo: 1, claude: 0 })
 
   assert.equal(row(work).status, 'todo')
   assert.equal(row(work).agent_id, null)
@@ -37,5 +37,36 @@ test('recoverStuckTasks: task worker balik ke todo, review lead balik ke review'
   assert.equal(row(finished).agent_id, 'qa')
 
   // dijalankan lagi tidak mengubah apa pun
-  assert.deepEqual(recoverStuckTasks(), { review: 0, todo: 0 })
+  assert.deepEqual(recoverStuckTasks(), { review: 0, todo: 0, claude: 0 })
+  db.exec('DELETE FROM tasks')
+})
+
+test('restart: task Claude yang berjalan masuk review dengan catatan, tidak diulang; id sesi lama dilepas', () => {
+  const running = Number(insertClaudeTask('jalan', 'proyek-a', 'kerjakan').lastInsertRowid)
+  updateTask(running, { status: 'in_progress', session_id: 's1' })
+  const reviewed = Number(insertClaudeTask('menunggu keputusan', 'proyek-a', 'x').lastInsertRowid)
+  updateTask(reviewed, { status: 'review', session_id: 's2', output: 'Selesai' })
+  const sim = add('simulasi')
+  updateTask(sim, { status: 'in_progress', agent_id: 'prog1' })
+
+  assert.deepEqual(recoverStuckTasks(), { review: 0, todo: 1, claude: 1 })
+
+  assert.equal(row(running).status, 'review')
+  assert.equal(row(running).output, RESTART_NOTE)
+  assert.equal(row(sim).status, 'todo') // simulasi tetap diulang seperti sebelumnya
+  // s1 dipakai ulang oleh server baru: task lama tidak boleh ikut terbaca sebagai pemilik sesi itu
+  assert.equal(row(reviewed).session_id, null)
+  assert.equal(getRunningTaskBySession('s1'), undefined)
+  db.exec('DELETE FROM tasks')
+})
+
+test('pemain di jaringan tidak menerima instruksi, hasil, proyek, dan sesi task Claude', () => {
+  const id = Number(insertClaudeTask('judul', 'proyek-a', 'instruksi rahasia').lastInsertRowid)
+  updateTask(id, { status: 'in_progress', session_id: 's9', detail: 'isi hasil' })
+  const shown = publicTask(row(id))
+  assert.equal(shown.title, 'judul')
+  assert.equal(shown.mode, 'claude')
+  for (const k of ['prompt', 'detail', 'session_id', 'project_id']) assert.equal(k in shown, false, k)
+  assert.equal(getRunningTaskBySession('s9').id, id)
+  db.exec('DELETE FROM tasks')
 })
