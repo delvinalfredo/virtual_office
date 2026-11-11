@@ -10,7 +10,12 @@ let hasGit = true
 try { execFileSync('git', ['--version'], { stdio: 'ignore' }) } catch { hasGit = false }
 const T = { skip: !hasGit && 'git tidak terpasang' }
 
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kantor-git-'))
+// realpath: di Windows TEMP bisa berbentuk nama pendek 8.3 (DELVIN~1), sedangkan git melaporkan jalur panjang,
+// jadi perbandingan jalur dan junction node_modules gagal bila memakai bentuk pendek.
+const tmp = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), 'kantor-git-'))
+// git berhenti mencari repo di atas folder uji; kalau tidak, folder "biasa" di dalam repo lain (misalnya home
+// pengguna yang jadi repo git) dianggap repo dan tes "bukan repo" gagal.
+process.env.GIT_CEILING_DIRECTORIES = path.dirname(tmp)
 after(() => fs.rmSync(tmp, { recursive: true, force: true }))
 const ID = ['-c', 'user.name=uji', '-c', 'user.email=uji@uji']
 const git = (cwd, ...a) => execFileSync('git', [...ID, ...a], { cwd, encoding: 'utf8' })
