@@ -1,19 +1,18 @@
 import { useState, useEffect, useRef } from 'react'
 import { sfx } from './sfx'
-
-const COLS = [
-  { key: 'todo', label: 'To Do' },
-  { key: 'in_progress', label: 'In Progress' },
-  { key: 'review', label: 'Review' },
-  { key: 'done', label: 'Done' },
-]
+import { lookFor } from './looks'
 
 const usd = (n) => `$${(n ?? 0).toFixed(2)}`
+const clock = (at) => new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+const STATE = { working: 'kerja', walking: 'jalan', idle: 'senggang' }
+const CLAUDE = 'Claude Code'
+const whoLabel = (who) => (who === 'claude' ? CLAUDE : who ? lookFor(who).label : null)
 
-function StatsPanel({ control }) {
-  const [stats, setStats] = useState(null) // null = memuat
+// Panel pantauan: angka ringkas, tim, dan log kejadian. Biaya dan jumlah sesi hanya untuk pemilik komputer.
+function Watch({ tasks, agents, agentsStatic, events, control }) {
+  const [stats, setStats] = useState(null) // jumlah task selesai per agent; null = memuat
   const [failed, setFailed] = useState(false)
-  const [cost, setCost] = useState(null) // { today, total, runs }; hanya untuk pemilik komputer
+  const [cost, setCost] = useState(null) // { today, total, runs }
   const { on, call } = control
   useEffect(() => {
     if (!on) return
@@ -22,45 +21,78 @@ function StatsPanel({ control }) {
     const iv = setInterval(load, 5000)
     return () => clearInterval(iv)
   }, [on, call])
+  // jumlah selesai hanya berubah bersama daftar task, jadi dimuat ulang saat daftar itu berganti, bukan tiap beberapa detik
   useEffect(() => {
-    const load = () => fetch('/api/stats').then((r) => r.json()).then((d) => { setStats(d); setFailed(false) }).catch(() => setFailed(true))
-    load()
-    const iv = setInterval(load, 5000)
-    return () => clearInterval(iv)
-  }, [])
-  const max = Math.max(1, ...(stats ?? []).map((s) => s.done))
+    fetch('/api/stats').then((r) => r.json()).then((d) => { setStats(d); setFailed(false) }).catch(() => setFailed(true))
+  }, [tasks])
+
+  const done = tasks.filter((t) => t.status === 'done').length
+  const busy = tasks.filter((t) => t.status === 'in_progress').length
+  const running = on ? (control.sessions ?? []).filter((s) => s.state === 'running' || s.state === 'stopping').length : null
+  const guests = agents.filter((a) => a.live).length
+  const team = agentsStatic.map((s) => {
+    const run = agents.find((a) => a.id === s.id)
+    const task = tasks.find((t) => t.agent_id === s.id && t.status === 'in_progress')
+    return { id: s.id, look: lookFor(s.id), state: run?.state ?? 'idle', now: task ? task.title : run?.bubble, done: stats?.find((x) => x.id === s.id)?.done }
+  })
+  const working = team.filter((x) => x.state === 'working').length
+
   return (
-    <section className="stats panel" aria-label="Report tim">
-      <h2>Report tim</h2>
-      {failed && <p className="empty">Server tidak terjangkau, mencoba lagi.</p>}
-      {!failed && stats === null && <p className="empty">Memuat data.</p>}
-      {stats?.length === 0 && <p className="empty">Belum ada data.</p>}
-      {cost && (
-        <p className="note">
-          Biaya Claude Code: {usd(cost.today)} hari ini, {usd(cost.total)} dari {cost.runs} sesi tersimpan.
-        </p>
-      )}
-      {stats?.map((s) => (
-        <div key={s.id} className="srow">
-          <div>
-            <span>{s.id}</span>
-            <span>{s.done} task, rata-rata {s.avgSec} detik</span>
-          </div>
-          <div className="bar"><i style={{ transform: `scaleX(${s.done / max})` }} /></div>
+    <>
+      <section className="sec" aria-label="Ringkasan">
+        <div className="tiles">
+          <div className="tile"><b>{done}</b><span>task selesai</span></div>
+          <div className="tile"><b>{busy}</b><span>sedang dikerjakan</span></div>
+          {running !== null && <div className="tile"><b>{running}</b><span>sesi Claude jalan</span></div>}
+          {cost && <div className="tile"><b>{usd(cost.today)}</b><span>biaya Claude hari ini</span></div>}
         </div>
-      ))}
-    </section>
+      </section>
+      <section className="sec" aria-label="Aktivitas">
+        <h3>Aktivitas</h3>
+        {events.length === 0 && <p className="empty">Belum ada kejadian. Tambah task di panel kiri.</p>}
+        <ul className="alist">
+          {[...events].reverse().map((e) => {
+            const who = whoLabel(e.who)
+            return (
+              <li key={e.id ?? e.at}>
+                <time dateTime={new Date(e.at).toISOString()}>{clock(e.at)}</time>
+                {who && <b>{who} </b>}{e.text}
+              </li>
+            )
+          })}
+        </ul>
+      </section>
+      <section className="sec" aria-label="Tim">
+        <h3>Tim <span>{working} dari {team.length} kerja</span></h3>
+        {failed && <p className="empty">Jumlah task selesai tidak termuat.</p>}
+        {guests > 0 && <p className="note">{guests} tamu Claude Code di ruang meeting.</p>}
+        {team.map((x) => (
+          <div key={x.id} className="trow" style={{ '--tag': x.look.tag }}>
+            <i aria-hidden="true" />
+            <div>
+              <b>{x.look.label}</b>
+              <small>{STATE[x.state] ?? x.state}{x.now ? `, ${x.now}` : ''}</small>
+            </div>
+            {x.done > 0 && <span aria-label={`${x.done} task selesai`}>{x.done}</span>}
+          </div>
+        ))}
+      </section>
+    </>
   )
 }
 
-const CLAUDE = 'Claude Code'
+const SECTION = {
+  in_progress: 'Sedang dikerjakan',
+  todo: 'Antrian',
+  done: 'Selesai',
+}
 
-// Papan Kanban. Task Claude Code tampil untuk semua pemain (judul dan status), tetapi proyek, kemajuan sesi,
-// hasil, dan tombol keputusan hanya muncul di komputer pemilik (control.on).
-// hidden: kolom tidak digambar, tetapi komponen tetap hidup supaya hitungan di judul tab dan bunyinya jalan terus.
-export function Board({ tasks, onDelete, control, hidden = false }) {
+// Dua panel samping. Kiri: pekerjaan (sedang dikerjakan, antrian, selesai, form). Kanan: review yang
+// butuh keputusan, lalu pantauan. Task Claude Code tampil untuk semua pemain (judul dan status), tetapi
+// proyek, kemajuan sesi, hasil, dan tombol keputusan hanya muncul di komputer pemilik (control.on).
+// hidden: panel tidak digambar, tetapi komponen tetap hidup supaya hitungan di judul tab dan bunyinya jalan terus.
+export function Board({ tasks, agents, agentsStatic, events, onDelete, control, hidden = false, form = null }) {
   const [open, setOpen] = useState(null)
-  const [showStats, setShowStats] = useState(false)
   const [revise, setRevise] = useState(null) // { id, text }
   const [cardError, setCardError] = useState(null) // { id, text }
   const [busy, setBusy] = useState(false)
@@ -128,118 +160,131 @@ export function Board({ tasks, onDelete, control, hidden = false }) {
     if (await decide(id, 'revise', { note: revise.text })) setRevise(null)
   }
 
+  const card = (t) => {
+    const claude = t.mode === 'claude'
+    const mine = claude && control.on
+    const session = mine && t.status === 'in_progress' ? control.sessions?.find((s) => s.id === t.session_id) : null
+    const subagents = (session?.subagents ?? []).filter((x) => x.state === 'running').map((x) => x.type)
+    const canOpen = t.status === 'done'
+    const canDelete = t.status === 'todo' || t.status === 'done' || (mine && t.status === 'review')
+    return (
+      <div
+        key={t.id}
+        className={`tcard${canOpen ? ' open' : ''}${claude ? ' claude' : ''}`}
+        {...(canOpen && {
+          role: 'button',
+          tabIndex: 0,
+          'aria-label': `Lihat hasil: ${t.title}`,
+          onClick: () => setOpen(t),
+          onKeyDown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpen(t) } },
+        })}
+      >
+        <div className="body">
+          <div className="title">{t.title}</div>
+          {t.status === 'in_progress' && !claude && (
+            <div className="bar"><i style={{ transform: `scaleX(${Math.min(1, t.progress / t.est)})` }} /></div>
+          )}
+          {t.agent_id && <div className="who">{lookFor(t.agent_id).label}</div>}
+          {claude && <div className="who">{CLAUDE}{mine && t.project_id ? `, ${projectName(t.project_id)}` : ''}{mine && t.cost > 0 ? `, ${usd(t.cost)}` : ''}</div>}
+          {claude && t.status === 'in_progress' && (
+            <div className="tlive">
+              {session
+                ? `${session.activity}${session.tools ? `, ${session.tools} tool` : ''}${subagents.length ? `. Subagent: ${subagents.join(', ')}` : ''}`
+                : 'Sedang dikerjakan'}
+            </div>
+          )}
+          {!claude && t.status === 'review' && <div className="tnote">Menunggu review Tech Lead</div>}
+          {claude && t.status === 'review' && t.output && <div className="tnote">{t.output}</div>}
+          {mine && t.branch && t.status === 'review' && <div className="tnote">Cabang {t.branch}</div>}
+          {mine && t.status === 'review' && (
+            <div className="tact">
+              <button className="btn sm go" disabled={busy} onClick={() => decide(t.id, 'approve')}>Setujui</button>
+              {t.session_id && (
+                <button className="btn sm" aria-expanded={revise?.id === t.id} onClick={() => setRevise(revise?.id === t.id ? null : { id: t.id, text: '' })}>
+                  Revisi
+                </button>
+              )}
+              <button className="btn sm" disabled={busy} onClick={() => decide(t.id, 'retry')}>Ulangi</button>
+              {(t.detail || t.branch) && <button className="btn sm" aria-label={`Lihat detail: ${t.title}`} onClick={() => setOpen(t)}>Detail</button>}
+              {t.branch && (
+                <button className="btn sm go full" disabled={busy} title="Gabungkan cabang task ke cabang aktif proyek" onClick={() => decide(t.id, 'merge')}>
+                  Gabungkan
+                </button>
+              )}
+            </div>
+          )}
+          {mine && revise?.id === t.id && (
+            <form className="trev" onSubmit={(e) => sendRevision(e, t.id)}>
+              <textarea
+                className="field"
+                rows={2}
+                value={revise.text}
+                maxLength={4000}
+                onChange={(e) => setRevise({ id: t.id, text: e.target.value })}
+                placeholder="Apa yang perlu diperbaiki"
+                aria-label={`Catatan revisi: ${t.title}`}
+              />
+              <button type="submit" className="btn sm go" disabled={busy || !revise.text.trim()}>Kirim revisi</button>
+            </form>
+          )}
+          {cardError?.id === t.id && <div role="alert" className="tnote bad">{cardError.text}</div>}
+        </div>
+        {canDelete && (
+          <button
+            className="x"
+            title="Hapus task"
+            aria-label={`Hapus task: ${t.title}`}
+            onClick={(e) => { e.stopPropagation(); onDelete?.(t.id) }}
+          >
+            ×
+          </button>
+        )}
+      </div>
+    )
+  }
+
+  const byStatus = (s) => tasks.filter((t) => t.status === s)
+  const section = (key, empty) => {
+    const items = byStatus(key)
+    return (
+      <section className={`sec ${key}`} aria-label={SECTION[key]}>
+        <h3>{SECTION[key]} <span>{items.length}</span></h3>
+        {items.length === 0 && <p className="empty">{empty}</p>}
+        {items.map(card)}
+      </section>
+    )
+  }
+  const review = byStatus('review')
+
   return (
     <>
-      <button
-        className="btn sm statsbtn"
-        aria-pressed={showStats}
-        onClick={() => setShowStats((v) => !v)}
-      >
-        {showStats ? 'Tutup report' : 'Report tim'}
-      </button>
-      {showStats && <StatsPanel control={control} />}
-
-      {!hidden && <div className={`board${tasks.some((t) => t.mode === 'claude') ? ' wide' : ''}`}>
-        {COLS.map((c) => {
-          const items = tasks.filter((t) => t.status === c.key)
-          return (
-            <section key={c.key} className={`col panel ${c.key}`} aria-label={c.label}>
-              <h3>{c.label} <span>{items.length}</span></h3>
-              {items.length === 0 && <p className="empty">Kosong</p>}
-              {items.map((t) => {
-                const claude = t.mode === 'claude'
-                const mine = claude && control.on
-                const session = mine && t.status === 'in_progress' ? control.sessions?.find((s) => s.id === t.session_id) : null
-                const subagents = (session?.subagents ?? []).filter((x) => x.state === 'running').map((x) => x.type)
-                const canOpen = t.status === 'done'
-                const canDelete = t.status === 'todo' || t.status === 'done' || (mine && t.status === 'review')
-                return (
-                  <div
-                    key={t.id}
-                    className={`tcard${canOpen ? ' open' : ''}${claude ? ' claude' : ''}`}
-                    {...(canOpen && {
-                      role: 'button',
-                      tabIndex: 0,
-                      'aria-label': `Lihat hasil: ${t.title}`,
-                      onClick: () => setOpen(t),
-                      onKeyDown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpen(t) } },
-                    })}
-                  >
-                    <div className="body">
-                      <div className="title">{t.title}</div>
-                      {t.status === 'in_progress' && !claude && (
-                        <div className="bar"><i style={{ transform: `scaleX(${Math.min(1, t.progress / t.est)})` }} /></div>
-                      )}
-                      {t.agent_id && <div className="who">@{t.agent_id}</div>}
-                      {claude && <div className="who">{CLAUDE}{mine && t.project_id ? `, ${projectName(t.project_id)}` : ''}{mine && t.cost > 0 ? `, ${usd(t.cost)}` : ''}</div>}
-                      {claude && t.status === 'in_progress' && (
-                        <div className="tlive">
-                          {session
-                            ? `${session.activity}${session.tools ? `, ${session.tools} tool` : ''}${subagents.length ? `. Subagent: ${subagents.join(', ')}` : ''}`
-                            : 'Sedang dikerjakan'}
-                        </div>
-                      )}
-                      {claude && t.status === 'review' && t.output && <div className="tnote">{t.output}</div>}
-                      {mine && t.branch && t.status === 'review' && <div className="tnote">Cabang {t.branch}</div>}
-                      {mine && t.status === 'review' && (
-                        <div className="tact">
-                          <button className="btn sm go" disabled={busy} onClick={() => decide(t.id, 'approve')}>Setujui</button>
-                          {t.session_id && (
-                            <button className="btn sm" aria-expanded={revise?.id === t.id} onClick={() => setRevise(revise?.id === t.id ? null : { id: t.id, text: '' })}>
-                              Revisi
-                            </button>
-                          )}
-                          <button className="btn sm" disabled={busy} onClick={() => decide(t.id, 'retry')}>Ulangi</button>
-                          {(t.detail || t.branch) && <button className="btn sm" aria-label={`Lihat detail: ${t.title}`} onClick={() => setOpen(t)}>Detail</button>}
-                          {t.branch && (
-                            <button className="btn sm go full" disabled={busy} title="Gabungkan cabang task ke cabang aktif proyek" onClick={() => decide(t.id, 'merge')}>
-                              Gabungkan
-                            </button>
-                          )}
-                        </div>
-                      )}
-                      {mine && revise?.id === t.id && (
-                        <form className="trev" onSubmit={(e) => sendRevision(e, t.id)}>
-                          <textarea
-                            className="field"
-                            rows={2}
-                            value={revise.text}
-                            maxLength={4000}
-                            onChange={(e) => setRevise({ id: t.id, text: e.target.value })}
-                            placeholder="Apa yang perlu diperbaiki"
-                            aria-label={`Catatan revisi: ${t.title}`}
-                          />
-                          <button type="submit" className="btn sm go" disabled={busy || !revise.text.trim()}>Kirim revisi</button>
-                        </form>
-                      )}
-                      {cardError?.id === t.id && <div role="alert" className="tnote bad">{cardError.text}</div>}
-                    </div>
-                    {canDelete && (
-                      <button
-                        className="x"
-                        title="Hapus task"
-                        aria-label={`Hapus task: ${t.title}`}
-                        onClick={(e) => { e.stopPropagation(); onDelete?.(t.id) }}
-                      >
-                        ×
-                      </button>
-                    )}
-                  </div>
-                )
-              })}
+      {!hidden && (
+        <>
+          <aside className="side left" aria-label="Pekerjaan">
+            {section('in_progress', 'Tidak ada yang dikerjakan. Antrian kosong atau semua agent sibuk.')}
+            {section('todo', 'Antrian kosong. Tambah task di bawah.')}
+            {section('done', 'Belum ada task selesai.')}
+            {form}
+          </aside>
+          <aside className="side right" aria-label="Pantauan">
+            <section className="sec review" aria-label="Review">
+              <h3>{owner ? 'Butuh keputusanmu' : 'Review'} <span>{review.length}</span></h3>
+              {review.length === 0 && <p className="empty">{owner ? 'Tidak ada yang menunggu keputusan.' : 'Tidak ada yang menunggu review.'}</p>}
+              {review.map(card)}
             </section>
-          )
-        })}
-      </div>}
+            <Watch tasks={tasks} agents={agents} agentsStatic={agentsStatic} events={events} control={control} />
+          </aside>
+        </>
+      )}
 
       {open && (
         <div className="backdrop" onClick={closeDialog}>
           <div className="dialog panel" role="dialog" aria-modal="true" aria-label={open.title} onClick={(e) => e.stopPropagation()}>
             <h2>{open.title}</h2>
             <div className="meta">
-              {open.mode === 'claude' ? CLAUDE : `@${open.agent_id}`}, {open.finished_at
+              {open.mode === 'claude' ? CLAUDE : lookFor(open.agent_id).label}, {open.finished_at
                 ? `selesai ${new Date(open.finished_at).toLocaleTimeString()}`
-                : open.status === 'review' ? 'menunggu keputusan' : 'belum tercatat'}
+                : open.status === 'review' ? 'menunggu keputusan' : 'belum tercatat'}{open.branch ? `, cabang ${open.branch}` : ''}
             </div>
             <pre>{(open.mode === 'claude' && open.detail) || open.output || '(tidak ada output)'}</pre>
             {diff && (

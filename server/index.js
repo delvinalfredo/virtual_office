@@ -121,6 +121,9 @@ const peers = new Map()
 
 // riwayat chat di memori, dikirim ke pendatang baru lewat snapshot
 const chatLog = []
+// log kejadian task (siapa mulai, menyerahkan, menyetujui apa) untuk panel aktivitas; isinya generik,
+// tanpa nama proyek atau instruksi, jadi aman dilihat pemain lain di jaringan
+const eventLog = []
 
 const SPEED = 3.5
 // jarak "sudah sampai". Titik meja agent menempel di tepi kotak tabrakan meja, jadi resolveObstacles
@@ -220,6 +223,15 @@ function sayChat(m) {
   broadcast(msg)
 }
 
+// who: id agent, 'claude', atau null untuk pemain. id urut jadi key di klien (dua kejadian bisa punya jam dan teks sama)
+let eventSeq = 0
+function logEvent(who, text) {
+  const ev = { type: 'event', id: ++eventSeq, who, text, at: Date.now() }
+  eventLog.push(ev)
+  if (eventLog.length > 40) eventLog.shift()
+  broadcast(ev)
+}
+
 // daftar pemain lain untuk satu penerima: dirinya sendiri tidak ikut, jadi klien tidak perlu menyaring
 const peerList = (except) =>
   [...peers].filter(([c]) => c !== except).map(([, q]) => ({ name: q.name, x: q.x, z: q.z, ts: q.ts, ct: q.ct, pose: q.pose, h: q.h }))
@@ -248,6 +260,7 @@ function snapshot(ws) {
     tasks: getTasks(),
     peers: peerList(ws),
     chat: chatLog,
+    events: eventLog,
   }
 }
 
@@ -341,6 +354,7 @@ function dispatchReview() {
     lead.idleWalk = false
     lead.bubble = `Review: ${t.title}`
     goTo(lead, MEET_LEAD)
+    logEvent(lead.id, `mereview "${t.title}"`)
     broadcast({ type: 'task-update' })
   }
 }
@@ -352,6 +366,7 @@ function assign(agent, task) {
   agent.idleWalk = false
   agent.bubble = `Mengerjakan: ${task.title}`
   goTo(agent, agent.desk)
+  logEvent(agent.id, `mulai "${task.title}"`)
   broadcast({ type: 'task-update' })
 }
 
@@ -514,6 +529,7 @@ setInterval(() => {
         a.state = 'idle'
         a.bubble = isReview ? APPROVED : 'Kirim ke review'
         a.restT = 3
+        logEvent(a.id, isReview ? `menyetujui "${t.title}"` : `menyerahkan "${t.title}" ke review`)
         broadcast({ type: 'task-update' })
         if (isReview) {
           // lead selesai: cek antrian todo berikutnya
@@ -586,6 +602,7 @@ app.post('/api/tasks', (req, res) => {
   if (!Number.isFinite(e) || e <= 0 || e > 600) return res.status(400).json({ error: 'est 1..600 detik' })
   const info = insertTask(title.trim().slice(0, 80), e)
   const t = db.prepare('SELECT * FROM tasks WHERE id=?').get(info.lastInsertRowid)
+  logEvent(null, `task baru "${t.title}"`)
   broadcast({ type: 'task-update' })
   dispatch()
   res.status(201).json(t)
@@ -606,6 +623,7 @@ app.delete('/api/tasks/:id', async (req, res) => {
     if (a.task === id) { a.task = null; a.state = 'idle'; a.bubble = null }
   }
   db.prepare('DELETE FROM tasks WHERE id=?').run(id)
+  logEvent(null, `"${t.title}" dihapus`)
   broadcast({ type: 'task-update' })
   dispatch()
   res.json({ ok: true })
@@ -722,6 +740,7 @@ function claudeRun(roles = null) {
 // keepSession: sesi yang selesai normal tetap tersimpan di task, karena Revisi melanjutkannya (--resume)
 const toReview = (t, note, detail = null, keepSession = false) => {
   updateTask(t.id, { status: 'review', session_id: keepSession ? t.session_id : null, output: note, detail })
+  logEvent('claude', `"${t.title}": ${note}`)
   broadcast({ type: 'task-update' })
 }
 
@@ -782,6 +801,7 @@ async function dispatchClaude() {
         continue
       }
       updateTask(t.id, { status: 'in_progress', session_id: r.id, output: null, detail: null })
+      logEvent('claude', `mulai "${t.title}"`)
       broadcast({ type: 'task-update' })
     }
   } finally {
@@ -845,6 +865,7 @@ app.post('/api/tasks/claude', control(true), (req, res) => {
     if (given.length < kit.length) roles = given
   }
   const info = insertClaudeTask(title, req.body.projectId, prompt, roles)
+  logEvent(null, `task baru "${title}" untuk Claude Code`)
   broadcast({ type: 'task-update' })
   dispatchClaude()
   res.status(201).json(getTask(info.lastInsertRowid))
@@ -852,8 +873,10 @@ app.post('/api/tasks/claude', control(true), (req, res) => {
 app.post('/api/tasks/:id/approve', control(true), (req, res) => {
   const t = claudeTask(req, res, 'review')
   if (!t) return
-  // disetujui tanpa digabung: cabang kerja tetap ada supaya bisa digabung sendiri nanti
-  updateTask(t.id, { status: 'done', finished_at: new Date().toISOString(), ...(t.branch && { output: `Disetujui. Perubahan ada di cabang ${t.branch}, belum digabung.` }) })
+  // disetujui tanpa digabung: cabang kerja tetap ada supaya bisa digabung sendiri nanti. Nama cabang tidak ditulis
+  // ke output karena output task selesai terbaca semua pemain; pemilik melihatnya dari kolom branch di dialog.
+  updateTask(t.id, { status: 'done', finished_at: new Date().toISOString(), ...(t.branch && { output: 'Disetujui, belum digabung.' }) })
+  logEvent(null, `"${t.title}" disetujui`)
   broadcast({ type: 'task-update' })
   res.json({ ok: true })
 })
@@ -863,6 +886,7 @@ app.post('/api/tasks/:id/retry', control(true), async (req, res) => {
   const d = await dropWork(t)
   if (d.error) return res.status(400).json(d)
   updateTask(t.id, { status: 'todo', session_id: null, output: null, detail: null, ...noBranch })
+  logEvent(null, `"${t.title}" diulang dari awal`)
   broadcast({ type: 'task-update' })
   dispatchClaude()
   res.json({ ok: true })
@@ -881,11 +905,15 @@ app.post('/api/tasks/:id/merge', control(true), async (req, res) => {
     const m = await mergeBranch({ projectDir: project.path, branch: t.branch, title: t.title })
     if (m.error) return res.status(400).json(m)
     const d = await discard({ projectDir: project.path, worktree: t.worktree, branch: t.branch })
+    // nama cabang dan pesan error (bisa memuat path) hanya ke detail, yang tidak dikirim ke pemain lain
+    const into = `Digabung ke cabang ${m.into}.${d.error ? `\nFolder kerja belum terhapus: ${d.error}` : ''}`
     updateTask(t.id, {
       status: 'done', finished_at: new Date().toISOString(), session_id: null,
-      output: d.error ? `Digabung ke cabang ${m.into}, tetapi folder kerja belum terhapus: ${d.error}` : `Digabung ke cabang ${m.into}.`,
+      output: d.error ? 'Digabung, tetapi folder kerja belum terhapus.' : 'Digabung ke proyek.',
+      detail: `${into}\n\n${t.detail ?? ''}`.trim(),
       ...(d.error ? {} : noBranch),
     })
+    logEvent(null, `"${t.title}" digabung ke proyek`)
     broadcast({ type: 'task-update' })
     res.json({ ok: true, into: m.into })
   } finally {
@@ -907,6 +935,7 @@ app.post('/api/tasks/:id/revise', control(true), (req, res) => {
   const r = sessions.continueSession(t.session_id, req.body?.note)
   if (r.error) return res.status(400).json(r)
   updateTask(t.id, { status: 'in_progress', output: null })
+  logEvent('claude', `merevisi "${t.title}"`)
   broadcast({ type: 'task-update' })
   res.json({ ok: true })
 })

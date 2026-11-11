@@ -7,6 +7,7 @@ import { noteServerTime, push, resetInterp } from './interp'
 // siapa yang ada), jadi aplikasi tidak dirender ulang 20 kali per detik.
 const agentSig = (list) => list.map((a) => `${a.id}|${a.state}|${a.pose ?? ''}|${a.bubble ?? ''}|${a.label ?? ''}|${a.live ? 1 : 0}`).join('\n')
 const peerSig = (list) => list.map((p) => `${p.name}|${p.pose ?? ''}|${p.h ?? ''}`).join('\n')
+const EVENT_MAX = 40 // sama dengan ring buffer eventLog di server
 // Server lama belum mengirim cap waktu: pakai waktu tiba paket sebagai gantinya, supaya karakter tidak membeku.
 function ingestAgents(list, ts) {
   const now = performance.now()
@@ -32,6 +33,7 @@ export function useKantor() {
   const [agentsStatic, setAgentsStatic] = useState([]) // {id,role,desk_x,desk_z,skill}
   const [peers, setPeers] = useState([]) // pemain lain (server tidak mengirim diri sendiri)
   const [chat, setChat] = useState([]) // {name,text,agent,at}
+  const [events, setEvents] = useState([]) // kejadian task dari server: {who,text,at}, terbaru di akhir
   const [online, setOnline] = useState(true)
   const [sessionsTick, setSessionsTick] = useState(0) // naik tiap server memberi sinyal sesi Claude berubah
   const wsRef = useRef(null)
@@ -69,6 +71,9 @@ export function useKantor() {
           setTasks(m.tasks)
           setPeers(m.peers ?? [])
           setChat(m.chat ?? [])
+          setEvents(m.events ?? [])
+        } else if (m.type === 'event') {
+          setEvents((e) => [...e.slice(1 - EVENT_MAX), m])
         } else if (m.type === 'agents') {
           ingestAgents(m.agents, m.ts)
           const sig = agentSig(m.agents)
@@ -144,5 +149,5 @@ export function useKantor() {
     }
   }, [])
 
-  return { agents, agentsStatic, tasks, peers, chat, online, sessionsTick, addTask, sendPos, sendChat }
+  return { agents, agentsStatic, tasks, peers, chat, events, online, sessionsTick, addTask, sendPos, sendChat }
 }

@@ -33,11 +33,11 @@ export default function App() {
   const playerPosRef = useRef({ x: 0, z: 6 })
   const [orbitTarget, setOrbitTarget] = useState([0, 1, 6])
   const [quality, setQuality] = useState(() => FORCED_Q ?? savedQ())
-  const { agents, agentsStatic, tasks, peers, chat, online, sessionsTick, addTask, sendPos, sendChat } = useKantor()
+  const { agents, agentsStatic, tasks, peers, chat, events, online, sessionsTick, addTask, sendPos, sendChat } = useKantor()
   const control = useControl(sessionsTick)
   const [dmAgent, setDmAgent] = useState(null)
   const [hint, setHint] = useState(null) // petunjuk tombol F di dok: tempat yang bisa dipakai di dekat pemain
-  // papan task dan form bisa disembunyikan supaya kantornya kelihatan; pilihan diingat
+  // panel kiri dan kanan bisa disembunyikan supaya kantornya kelihatan; pilihan diingat
   const [boardOn, setBoardOn] = useState(savedBoard)
   const toggleBoard = () => setBoardOn((v) => { try { localStorage.setItem('kantor-board', v ? 'off' : 'on') } catch { /* abaikan */ } return !v })
   // nama tersimpan di browser; kalau belum ada, acak sekali lalu diingat
@@ -116,9 +116,18 @@ export default function App() {
       </Canvas>
 
       <button className="btn sm boardbtn" aria-pressed={boardOn} onClick={toggleBoard}>
-        {boardOn ? 'Sembunyikan papan' : `Papan task${active ? ` (${active})` : ''}`}
+        {boardOn ? 'Sembunyikan panel' : `Panel${active ? ` (${active})` : ''}`}
       </button>
-      <Board tasks={tasks} onDelete={deleteTask} control={control} hidden={!boardOn} />
+      <Board
+        tasks={tasks}
+        agents={agents}
+        agentsStatic={agentsStatic}
+        events={events}
+        onDelete={deleteTask}
+        control={control}
+        hidden={!boardOn}
+        form={<TaskForm onAdd={addTask} control={control} />}
+      />
       <Sessions control={control} />
       <ChatUI chat={chat} onSend={say} />
       {dmAgent && (
@@ -128,8 +137,6 @@ export default function App() {
           onSend={(t, agent) => sendChat(t, agent)}
         />
       )}
-      {boardOn && <TaskForm onAdd={addTask} control={control} />}
-
       {!online && (
         <div role="status" className="status panel">
           Koneksi ke server putus. Mencoba tersambung lagi.

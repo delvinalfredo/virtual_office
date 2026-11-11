@@ -23,10 +23,14 @@ npm run lint     # oxlint
 
 ## Kontrol
 
-- WASD atau panah untuk jalan, Q/E untuk memutar kamera, scroll untuk zoom.
+- WASD atau panah untuk jalan, Q/E untuk memutar kamera, scroll untuk zoom, F untuk duduk atau memakai perabot di dekatmu.
 - Enter membuka chat, Esc menutupnya.
 - Klik avatar agent untuk kirim pesan langsung.
-- Kolom Nama di kiri bawah mengganti namamu. Nama disimpan di browser.
+- Kolom Nama di dok bawah mengganti namamu. Nama disimpan di browser.
+
+## Panel
+
+Kantor 3D di tengah, dua panel di kiri dan kanan. Kiri: pekerjaan (sedang dikerjakan, antrian, selesai, dan form task baru). Kanan: review yang menunggu keputusan, angka ringkas, log aktivitas (siapa mulai, menyerahkan, menyetujui task apa), dan daftar tim dengan status tiap agent. Tombol "Sembunyikan panel" di atas menyembunyikan keduanya supaya kantornya kelihatan penuh; pilihan diingat di browser. Di layar sempit kedua panel bertumpuk menutupi kantor, jadi tombol itu yang dipakai untuk gantian melihat kantor.
 
 ## Memantau Claude Code di kantor
 
