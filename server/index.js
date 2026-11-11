@@ -4,16 +4,17 @@ import http from 'node:http'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import db, { getAgents, getTasks, getTasksByStatus, recoverStuckTasks, RESTART_NOTE, insertTask, updateTask, getTask, getRunningTaskBySession, insertClaudeTask, publicTask, logSession, getHistory, costSummary } from './db.js'
+import db, { getAgents, getTasks, getTasksByStatus, recoverStuckTasks, RESTART_NOTE, insertTask, updateTask, publicTask } from './db.js'
 import { clampToRoom, resolveObstacles, DESK_SEATS, SPOTS, SEATS, MEET_LEAD } from '../src/office-plan.js'
 import { TOILET, free, route, plan } from './route.js'
 import { parseHook } from './live.js'
 import crypto from 'node:crypto'
 import { checkControl } from './control.js'
-import { loadProjects, addProject, removeProject, setProjectChecks } from './projects.js'
-import { loadKitAgents, writeAgentsFile, orchestrationPrompt } from './kit.js'
-import { prepare as prepareWork, snapshot as saveWork, diffOf, mergeBranch, discard } from './gitwork.js'
-import { createSessions, MAX_PROMPT } from './sessions.js'
+import { loadProjects, addProject, removeProject, setProjectFlags } from './projects.js'
+import { installKit } from './kit.js'
+import { createProject } from './scaffold.js'
+import { createWork } from './work.js'
+import { createSessions } from './sessions.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const app = express()
@@ -157,12 +158,38 @@ const pubAgent = (a) => ({
   ...(a.live && { live: true, look: a.look, label: a.label }),
 })
 
-function liveStart(rawId, type) {
+// Sesi dan subagent yang dijalankan dari papan diwakili anggota tim tetap, bukan tamu: perencana dan reviewer
+// oleh Tech Lead, penguji oleh QA, sisanya oleh programmer. Anggota yang sedang mewakili (a.busy) berjalan ke
+// mejanya dan bubble-nya mengikuti tool yang dipakai. Bila semua anggota peran itu sibuk, muncul tamu seperti biasa.
+const STAFF = {
+  architect: 'lead', planner: 'lead', 'code-reviewer': 'lead', 'security-reviewer': 'lead',
+  'tdd-guide': 'qa', 'e2e-runner': 'qa',
+}
+const staffFor = (type) => STAFF[type] ?? (/design|front|ui|ux/.test(type) ? 'designer' : /test|qa|review|audit|secur/.test(type) ? 'qa' : 'programmer')
+const standIn = new Map() // id tamu → id anggota tim yang mewakilinya
+
+function borrow(id, role, text) {
+  const a = [...agents.values()].find((x) => !x.live && !x.busy && x.role === role && x.task == null && (x.state === 'idle' || x.idleWalk))
+  if (!a) return false
+  a.busy = id
+  a.state = 'walking'
+  a.idleWalk = false
+  a.bubble = text
+  a.restT = 0
+  standIn.set(id, a.id)
+  goTo(a, a.desk)
+  return true
+}
+
+// staff: peran anggota tim yang diminta mewakili (null: selalu tamu, dipakai untuk sesi dari luar dashboard)
+function liveStart(rawId, type, staff = null) {
   const id = `live-${rawId}`
-  if (agents.has(id) || liveAgents().length >= LIVE_MAX) return
+  if (agents.has(id) || standIn.has(id)) return
   const queue = pendingAsk.get(type) ?? []
   while (queue.length && Date.now() - queue[0].at > 120000) queue.shift()
   const ask = queue.shift()
+  if (staff && borrow(id, staff, ask?.text || 'Mulai bekerja')) return
+  if (liveAgents().length >= LIVE_MAX) return
   const same = liveAgents().filter((a) => a.look === type).length
   const a = {
     id, role: 'live', live: true, skill: 1, look: type, label: same ? `${type} ${same + 1}` : type,
@@ -174,7 +201,7 @@ function liveStart(rawId, type) {
 }
 
 function liveTool(rawId, type, text) {
-  const a = agents.get(`live-${rawId}`)
+  const a = agents.get(standIn.get(`live-${rawId}`) ?? `live-${rawId}`)
   if (!a) {
     // hook dipasang di tengah proses: SubagentStart terlewat, jadi agen dibuat dari event tool pertama
     if (type) { liveStart(rawId, type); const n = agents.get(`live-${rawId}`); if (n) n.bubble = text }
@@ -187,6 +214,16 @@ function liveTool(rawId, type, text) {
 }
 
 function liveStop(id, text = DONE) {
+  if (standIn.has(id)) {
+    // anggota tim yang mewakili kembali senggang di tempatnya; perilaku senggang mengambil alih sesudah jeda
+    const m = agents.get(standIn.get(id))
+    standIn.delete(id)
+    if (m?.busy === id) {
+      Object.assign(m, { busy: null, state: 'idle', tx: m.x, tz: m.z, vias: [], bubble: text, restT: 3 })
+      dirty = true
+    }
+    return
+  }
   const a = agents.get(id)
   if (!a || a.done) return
   a.done = true
@@ -586,11 +623,11 @@ const recovered = recoverStuckTasks()
 if (recovered.todo || recovered.review) console.log(`task nyangkut dipulihkan: ${recovered.todo} ke todo, ${recovered.review} ke review`)
 for (const t of getTasksByStatus('review')) {
   // pekerjaan yang terputus saat server mati disimpan sebagai commit supaya tidak hilang
-  if (t.mode === 'claude' && t.worktree && t.output === RESTART_NOTE) saveWork({ worktree: t.worktree, title: t.title, taskId: t.id }).catch(() => {})
+  if (t.mode === 'claude' && t.worktree && t.output === RESTART_NOTE) setImmediate(() => work.saveInterrupted(t))
 }
 dispatch()
 dispatchReview()
-setInterval(() => { dispatch(); dispatchReview(); dispatchClaude() }, 1000)
+setInterval(() => { dispatch(); dispatchReview(); work.dispatch() }, 1000)
 
 // ---- REST API ----
 app.get('/api/tasks', (req, res) => res.json(isOwner(req) ? getTasks() : getTasks().map(publicTask)))
@@ -614,9 +651,8 @@ app.delete('/api/tasks/:id', async (req, res) => {
   if (!t) return res.status(404).json({ error: 'tidak ada' })
   if (t.mode === 'claude') {
     if (!isOwner(req)) return res.status(403).json({ error: 'hanya dari komputer ini' })
-    if (t.status === 'in_progress' && t.session_id) await stopAndWait(t.session_id)
-    const d = await dropWork(t)
-    if (d.error) return res.status(400).json(d)
+    const why = await work.beforeDelete(t)
+    if (why) return res.status(400).json({ error: why })
   }
   // kalau sedang dikerjakan, bebaskan agent-nya
   for (const a of agents.values()) {
@@ -658,23 +694,22 @@ const KANTOR_TOKEN = crypto.randomBytes(16).toString('hex')
 const PROJECTS_FILE = process.env.KANTOR_PROJECTS ?? path.join(__dirname, 'projects.json')
 // array yang sama dipegang mesin sesi, jadi daftar diganti di tempat (splice), bukan dengan array baru
 const projects = loadProjects(PROJECTS_FILE)
-const projectList = () => projects.map(({ id, name, path: dir, checks }) => ({ id, name, path: dir, checks }))
+const projectList = () => projects.map(({ id, name, path: dir, checks, setup }) => ({ id, name, path: dir, checks, setup }))
 const liveKey = (s) => `sess-${s.id}-${s.runs}`
 const sessions = createSessions({
   projects,
   bin: process.env.KANTOR_CLAUDE_BIN ?? 'claude',
   hooks: {
-    onStart: (s) => { liveStart(liveKey(s), s.projectName) },
+    onStart: (s) => { liveStart(liveKey(s), s.projectName, s.run?.staff ?? null) },
     onTool: (s, text) => liveTool(liveKey(s), s.projectName, text),
     onStop: (s) => {
       liveStop(`live-${liveKey(s)}`, { done: DONE, stopped: 'Dihentikan', error: 'Gagal' }[s.state])
-      logSessionEnd(s)
-      finishClaudeTask(s).catch(() => {})
+      work.sessionEnded(s)
     },
     // subagent yang dipanggil sesi tampil sebagai karakter tamu sendiri, dibaca dari stream sesi (tanpa hook terpasang)
     onSubagent: (s, ev) => {
       const id = `${liveKey(s)}-${ev.id}`
-      if (ev.kind === 'start') liveStart(id, ev.type)
+      if (ev.kind === 'start') liveStart(id, ev.type, s.run ? staffFor(ev.type) : null)
       else if (ev.kind === 'tool') liveTool(id, ev.type, ev.text)
       else liveStop(`live-${id}`)
     },
@@ -702,13 +737,13 @@ app.get('/api/control', control(false), (_req, res) => res.json({ token: KANTOR_
 // Alamat folder datang dari klien, jadi addProject memeriksa bahwa itu folder lengkap yang ada; izin tool tetap bawaan.
 app.get('/api/projects', control(true), (_req, res) => res.json(projectList()))
 app.post('/api/projects', control(true), (req, res) => {
-  const r = addProject(PROJECTS_FILE, { name: req.body?.name, path: req.body?.path, checks: req.body?.checks === true })
+  const r = addProject(PROJECTS_FILE, { name: req.body?.name, path: req.body?.path, checks: req.body?.checks === true, setup: req.body?.setup === true })
   if (r.error) return res.status(400).json(r)
   projects.splice(0, projects.length, ...loadProjects(PROJECTS_FILE))
   return res.status(201).json(projectList())
 })
 app.patch('/api/projects/:id', control(true), (req, res) => {
-  const r = setProjectChecks(PROJECTS_FILE, req.params.id, req.body?.checks === true)
+  const r = setProjectFlags(PROJECTS_FILE, req.params.id, { checks: req.body?.checks, setup: req.body?.setup })
   if (r.error) return res.status(400).json(r)
   projects.splice(0, projects.length, ...loadProjects(PROJECTS_FILE))
   return res.json(projectList())
@@ -722,32 +757,11 @@ app.delete('/api/projects/:id', control(true), (req, res) => {
   projects.splice(0, projects.length, ...loadProjects(PROJECTS_FILE))
   return res.json(projectList())
 })
-// ---- task yang dikerjakan Claude Code ----
-// Dibuat dan diputuskan hanya lewat penjaga yang sama dengan sesi. Sesi berjalan dengan subagent kit
-// (.claude/agents), batas biaya per task, dan hasilnya hanya tampil di komputer ini (lihat publicTask).
-const KIT_DIR = path.join(__dirname, '..', '.claude', 'agents')
-const BUDGET = Number(process.env.KANTOR_MAX_BUDGET)
-const MAX_BUDGET = Number.isFinite(BUDGET) && BUDGET > 0 ? BUDGET : 2
-
-// roles: nama subagent yang dipilih untuk task ini (null: semua subagent kit)
-function claudeRun(roles = null) {
-  const all = loadKitAgents(KIT_DIR)
-  const kit = roles ? Object.fromEntries(Object.entries(all).filter(([name]) => roles.includes(name))) : all
-  if (!Object.keys(kit).length) return { budget: MAX_BUDGET }
-  return { budget: MAX_BUDGET, agentsFile: writeAgentsFile(kit), appendPrompt: orchestrationPrompt(kit) }
-}
-
-// keepSession: sesi yang selesai normal tetap tersimpan di task, karena Revisi melanjutkannya (--resume)
-const toReview = (t, note, detail = null, keepSession = false) => {
-  updateTask(t.id, { status: 'review', session_id: keepSession ? t.session_id : null, output: note, detail })
-  logEvent('claude', `"${t.title}": ${note}`)
-  broadcast({ type: 'task-update' })
-}
-
+// ---- pekerjaan Claude Code: task tunggal dan pekerjaan besar (server/work.js) ----
+const KIT_ROOT = path.join(__dirname, '..')
+const KIT_DIR = path.join(KIT_ROOT, '.claude', 'agents')
 // Folder kerja per task (git worktree). Di dalam server/, yang sudah di-gitignore lewat pola workspace/.
 const WORK_ROOT = path.join(__dirname, 'workspace')
-const projectOf = (t) => projects.find((p) => p.id === t.project_id)
-const noBranch = { branch: null, worktree: null, base: null }
 // sisa folder kosong dari pembuangan sebelumnya (di Windows folder yang baru dihapus bisa tertahan sebentar);
 // rmdir hanya menghapus folder kosong, jadi folder kerja yang masih berisi tidak mungkin ikut terhapus
 try {
@@ -755,200 +769,22 @@ try {
     try { fs.rmdirSync(path.join(WORK_ROOT, name)) } catch { /* masih berisi atau dipakai: biarkan */ }
   }
 } catch { /* belum ada folder kerja */ }
+const work = createWork({ app, control, sessions, projects, kitDir: KIT_DIR, workRoot: WORK_ROOT, logEvent, broadcast })
 
-// Membuang cabang kerja sebuah task. Proyek yang sudah tidak terdaftar tidak bisa dibersihkan dari sini.
-async function dropWork(t) {
-  if (!t.worktree && !t.branch) return { ok: true }
-  const project = projectOf(t)
-  if (!project) return { ok: true }
-  return discard({ projectDir: project.path, worktree: t.worktree, branch: t.branch })
-}
-
-// Menunggu sesi benar-benar berhenti sebelum folder kerjanya dibuang.
-async function stopAndWait(sessionId) {
-  sessions.stop(sessionId)
-  for (let i = 0; i < 50; i++) {
-    const s = sessions.get(sessionId)
-    if (!s || (s.state !== 'running' && s.state !== 'stopping')) return
-    await new Promise((r) => setTimeout(r, 100))
-  }
-}
-
-// task Claude di antrian jalan satu per satu sampai batas sesi; sisanya menunggu. Proyek git bekerja di
-// cabang sendiri (kantor/task-N), proyek biasa langsung di foldernya. Pemanggilan tumpang tindih diabaikan.
-let dispatching = false
-async function dispatchClaude() {
-  if (dispatching) return
-  dispatching = true
-  try {
-    for (const t of getTasksByStatus('todo')) {
-      if (t.mode !== 'claude') continue
-      const project = projectOf(t)
-      if (!project) { toReview(t, 'Proyek sudah tidak ada di daftar.'); continue }
-      if (!sessions.hasSlot()) break // penuh: jangan menyiapkan cabang untuk task yang belum bisa jalan
-      const run = claudeRun(parseRoles(t.roles))
-      const work = await prepareWork({ projectDir: project.path, taskId: t.id, projectId: project.id, root: WORK_ROOT })
-      if (work.error) { toReview(t, 'Gagal menyiapkan cabang kerja.', work.error); continue }
-      if (work.cwd) {
-        run.cwd = work.cwd
-        updateTask(t.id, { branch: work.branch, worktree: work.worktree, base: work.base })
-      }
-      const r = sessions.start({ projectId: project.id, prompt: t.prompt || t.title, run })
-      if (r.error) {
-        if (work.cwd) { await discard({ projectDir: project.path, worktree: work.worktree, branch: work.branch }); updateTask(t.id, noBranch) }
-        if (r.busy) break
-        toReview(t, 'Gagal dimulai.', r.error)
-        continue
-      }
-      updateTask(t.id, { status: 'in_progress', session_id: r.id, output: null, detail: null })
-      logEvent('claude', `mulai "${t.title}"`)
-      broadcast({ type: 'task-update' })
-    }
-  } finally {
-    dispatching = false
-  }
-}
-
-const parseRoles = (v) => { try { const r = JSON.parse(v); return Array.isArray(r) ? r : null } catch { return null } }
-
-// setiap akhir sesi dicatat (task maupun manual): dasar biaya dan riwayat
-function logSessionEnd(s) {
-  const t = getRunningTaskBySession(s.id)
-  try {
-    logSession({
-      task_id: t?.id ?? null, project: s.projectName, state: s.state, runs: s.runs, tools: s.tools,
-      denials: s.result?.denials ?? 0, cost: s.result?.cost ?? 0, seconds: s.result?.seconds ?? null,
-      subagents: JSON.stringify([...s.subagents.values()].map((x) => x.type)),
-      result: s.result?.text || s.lastText || null, error: s.error ?? null,
-      started_at: new Date(s.startedAt).toISOString(), ended_at: new Date().toISOString(),
-    })
-  } catch { /* riwayat gagal tertulis tidak boleh menjatuhkan sesi */ }
-}
-
-// sesi selesai, gagal, atau dihentikan: hasil kerjanya disimpan sebagai commit di cabang task (termasuk yang
-// belum tuntas), lalu task menunggu keputusan di kolom Review
-async function finishClaudeTask(s) {
-  const t = getRunningTaskBySession(s.id)
-  if (!t) return
-  let note = { done: 'Selesai, menunggu persetujuan', stopped: 'Dihentikan', error: 'Gagal, perlu dicek' }[s.state] ?? 'Selesai'
-  if (s.result?.denials) note += `, ${s.result.denials} izin ditolak`
-  let detail = s.state === 'error' ? (s.error ?? null) : (s.result?.text || s.lastText || null)
-  if (t.worktree) {
-    const snap = await saveWork({ worktree: t.worktree, title: t.title, taskId: t.id })
-    if (snap.error) { note += ', perubahan gagal disimpan'; detail = `${snap.error}\n\n${detail ?? ''}`.trim() }
-  }
-  toReview(t, note, detail, true)
-}
-
-const claudeTask = (req, res, need) => {
-  const t = getTask(Number(req.params.id))
-  if (!t || t.mode !== 'claude') { res.status(404).json({ error: 'task Claude tidak ada' }); return null }
-  if (t.status !== need) { res.status(400).json({ error: `task harus di kolom ${need}` }); return null }
-  return t
-}
-
-app.post('/api/tasks/claude', control(true), (req, res) => {
-  const title = typeof req.body?.title === 'string' ? req.body.title.trim().slice(0, 80) : ''
-  const given = typeof req.body?.prompt === 'string' ? req.body.prompt.trim() : ''
-  const prompt = given || title
-  if (!title) return res.status(400).json({ error: 'judul wajib' })
-  if (!projects.some((p) => p.id === req.body?.projectId)) return res.status(400).json({ error: 'proyek tidak dikenal' })
-  if (prompt.length > MAX_PROMPT) return res.status(400).json({ error: `instruksi terlalu panjang (maksimal ${MAX_PROMPT} huruf)` })
-  if (prompt.startsWith('-')) return res.status(400).json({ error: 'instruksi tidak boleh diawali tanda minus' })
-  // roles: pilihan subagent; kosong atau semua dipilih berarti semua subagent kit
-  let roles = null
-  if (req.body?.roles !== undefined && req.body?.roles !== null) {
-    const kit = Object.keys(loadKitAgents(KIT_DIR))
-    const given = Array.isArray(req.body.roles) ? [...new Set(req.body.roles)] : null
-    if (!given || given.some((n) => !kit.includes(n))) return res.status(400).json({ error: 'peran tidak dikenal' })
-    if (given.length === 0) return res.status(400).json({ error: 'pilih minimal satu peran' })
-    if (given.length < kit.length) roles = given
-  }
-  const info = insertClaudeTask(title, req.body.projectId, prompt, roles)
-  logEvent(null, `task baru "${title}" untuk Claude Code`)
-  broadcast({ type: 'task-update' })
-  dispatchClaude()
-  res.status(201).json(getTask(info.lastInsertRowid))
-})
-app.post('/api/tasks/:id/approve', control(true), (req, res) => {
-  const t = claudeTask(req, res, 'review')
-  if (!t) return
-  // disetujui tanpa digabung: cabang kerja tetap ada supaya bisa digabung sendiri nanti. Nama cabang tidak ditulis
-  // ke output karena output task selesai terbaca semua pemain; pemilik melihatnya dari kolom branch di dialog.
-  updateTask(t.id, { status: 'done', finished_at: new Date().toISOString(), ...(t.branch && { output: 'Disetujui, belum digabung.' }) })
-  logEvent(null, `"${t.title}" disetujui`)
-  broadcast({ type: 'task-update' })
-  res.json({ ok: true })
-})
-app.post('/api/tasks/:id/retry', control(true), async (req, res) => {
-  const t = claudeTask(req, res, 'review')
-  if (!t) return
-  const d = await dropWork(t)
-  if (d.error) return res.status(400).json(d)
-  updateTask(t.id, { status: 'todo', session_id: null, output: null, detail: null, ...noBranch })
-  logEvent(null, `"${t.title}" diulang dari awal`)
-  broadcast({ type: 'task-update' })
-  dispatchClaude()
-  res.json({ ok: true })
-})
-// Gabungkan: cabang task masuk ke cabang aktif proyek, lalu cabang dan folder kerjanya dibuang
-const merging = new Set()
-app.post('/api/tasks/:id/merge', control(true), async (req, res) => {
-  const t = claudeTask(req, res, 'review')
-  if (!t) return
-  if (!t.branch) return res.status(400).json({ error: 'task ini tidak memakai cabang kerja' })
-  const project = projectOf(t)
-  if (!project) return res.status(400).json({ error: 'proyek sudah tidak ada di daftar' })
-  if (merging.has(t.id)) return res.status(400).json({ error: 'penggabungan sedang berjalan' })
-  merging.add(t.id)
-  try {
-    const m = await mergeBranch({ projectDir: project.path, branch: t.branch, title: t.title })
-    if (m.error) return res.status(400).json(m)
-    const d = await discard({ projectDir: project.path, worktree: t.worktree, branch: t.branch })
-    // nama cabang dan pesan error (bisa memuat path) hanya ke detail, yang tidak dikirim ke pemain lain
-    const into = `Digabung ke cabang ${m.into}.${d.error ? `\nFolder kerja belum terhapus: ${d.error}` : ''}`
-    updateTask(t.id, {
-      status: 'done', finished_at: new Date().toISOString(), session_id: null,
-      output: d.error ? 'Digabung, tetapi folder kerja belum terhapus.' : 'Digabung ke proyek.',
-      detail: `${into}\n\n${t.detail ?? ''}`.trim(),
-      ...(d.error ? {} : noBranch),
-    })
-    logEvent(null, `"${t.title}" digabung ke proyek`)
-    broadcast({ type: 'task-update' })
-    res.json({ ok: true, into: m.into })
-  } finally {
-    merging.delete(t.id)
-  }
-})
-// Perubahan yang dibuat sebuah task: daftar berkas dan patch terhadap titik awalnya
-app.get('/api/tasks/:id/diff', control(true), async (req, res) => {
-  const t = getTask(Number(req.params.id))
-  if (!t || t.mode !== 'claude' || !t.worktree) return res.status(404).json({ error: 'task ini tidak punya cabang kerja' })
-  const d = await diffOf({ worktree: t.worktree, base: t.base })
-  if (d.error) return res.status(400).json(d)
-  res.json({ branch: t.branch, ...d })
-})
-app.post('/api/tasks/:id/revise', control(true), (req, res) => {
-  const t = claudeTask(req, res, 'review')
-  if (!t) return
-  if (!t.session_id) return res.status(400).json({ error: 'sesinya sudah hilang, pilih Ulangi' })
-  const r = sessions.continueSession(t.session_id, req.body?.note)
+// Proyek baru dari nol (folder, repo git, kit, commit pertama), dan memasang kit ke proyek yang sudah ada.
+app.post('/api/projects/new', control(true), async (req, res) => {
+  const r = await createProject(PROJECTS_FILE, { name: req.body?.name, parent: req.body?.parent, kitRoot: KIT_ROOT, checks: req.body?.checks === true, setup: req.body?.setup === true })
   if (r.error) return res.status(400).json(r)
-  updateTask(t.id, { status: 'in_progress', output: null })
-  logEvent('claude', `merevisi "${t.title}"`)
-  broadcast({ type: 'task-update' })
-  res.json({ ok: true })
+  projects.splice(0, projects.length, ...loadProjects(PROJECTS_FILE))
+  return res.status(201).json(projectList())
+})
+app.post('/api/projects/:id/kit', control(true), (req, res) => {
+  const p = projects.find((x) => x.id === req.params.id)
+  if (!p) return res.status(404).json({ error: 'proyek tidak ditemukan' })
+  const r = installKit(KIT_ROOT, p.path)
+  return r.error ? res.status(400).json(r) : res.json(r)
 })
 
-// daftar peran (subagent kit) untuk form task; writes: true berarti boleh mengubah file
-app.get('/api/kit', control(true), (_req, res) => {
-  const kit = loadKitAgents(KIT_DIR)
-  res.json(Object.entries(kit).map(([name, a]) => ({
-    name, description: a.description.slice(0, 160), writes: (a.tools ?? []).some((t) => ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'].includes(t)),
-  })))
-})
-app.get('/api/history', control(true), (_req, res) => res.json(getHistory(50)))
-app.get('/api/costs', control(true), (_req, res) => res.json(costSummary()))
 app.get('/api/sessions', control(true), (_req, res) => res.json(sessions.list()))
 app.post('/api/sessions', control(true), (req, res) => {
   const r = sessions.start({ projectId: req.body?.projectId, prompt: req.body?.prompt })

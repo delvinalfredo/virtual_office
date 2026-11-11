@@ -13,8 +13,27 @@ if (prompt.includes('error')) {
   process.exit(1)
 }
 // kata "tulis": mengubah berkas di folder kerja, seperti Claude yang mengedit proyek
-if (prompt.includes('tulis')) fs.writeFileSync(`hasil-${prompt.replace(/\W+/g, '-').slice(0, 30)}.txt`, `${prompt}
+if (/(^|\s)tulis(\s|$)/.test(prompt)) fs.writeFileSync(`hasil-${prompt.replace(/\W+/g, '-').slice(0, 30)}.txt`, `${prompt}
 `)
+// "buatrencana <json>": perencana pekerjaan besar, menulis rencana mesin dan rencana untuk dibaca tim
+if (prompt.startsWith('buatrencana ')) {
+  fs.writeFileSync('kantor-plan.json', prompt.slice('buatrencana '.length))
+  fs.mkdirSync('docs/plans', { recursive: true })
+  fs.writeFileSync('docs/plans/rencana.md', '# rencana\n')
+}
+// "berkas=<nama> isi=<kata>": menulis satu berkas dengan isi tertentu
+const tulis = /berkas=(\S+) isi=(\S+)/.exec(prompt)
+if (tulis && !prompt.includes('penanda konflik') && !prompt.includes('hasilnya gagal')) fs.writeFileSync(tulis[1], `${tulis[2]}\n`)
+// instruksi perbaikan dari server: merapikan penanda konflik, atau membuang penyebab tes gagal
+if (prompt.includes('penanda konflik')) {
+  for (const f of fs.readdirSync('.')) {
+    if (!fs.statSync(f).isFile()) continue
+    const isi = fs.readFileSync(f, 'utf8')
+    // isi yang memuat "keras" sengaja tidak dirapikan: meniru sesi yang gagal membereskan bentrokan
+    if (/^<{7} /m.test(isi) && !isi.includes('keras')) fs.writeFileSync(f, isi.split('\n').filter((l) => !/^(<{7} |={7}$|>{7} )/.test(l.trimEnd())).join('\n'))
+  }
+}
+if (prompt.includes('hasilnya gagal') && fs.existsSync('rusak.txt') && !fs.readFileSync('rusak.txt', 'utf8').includes('bandel')) fs.rmSync('rusak.txt')
 if (prompt.includes('lama')) await new Promise((r) => setTimeout(r, 60000))
 
 if (prompt.includes('subagen')) {

@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { sfx } from './sfx'
 import { lookFor } from './looks'
+import { Epics, EpicFields } from './Epics'
 
 const usd = (n) => `$${(n ?? 0).toFixed(2)}`
 const clock = (at) => new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
@@ -91,12 +92,13 @@ const SECTION = {
 // butuh keputusan, lalu pantauan. Task Claude Code tampil untuk semua pemain (judul dan status), tetapi
 // proyek, kemajuan sesi, hasil, dan tombol keputusan hanya muncul di komputer pemilik (control.on).
 // hidden: panel tidak digambar, tetapi komponen tetap hidup supaya hitungan di judul tab dan bunyinya jalan terus.
-export function Board({ tasks, agents, agentsStatic, events, onDelete, control, hidden = false, form = null }) {
+export function Board({ tasks, agents, agentsStatic, events, onDelete, control, hidden = false, form = null, tick = 0 }) {
   const [open, setOpen] = useState(null)
   const [revise, setRevise] = useState(null) // { id, text }
   const [cardError, setCardError] = useState(null) // { id, text }
   const [busy, setBusy] = useState(false)
-  const [diffs, setDiffs] = useState({}) // perubahan per id task yang dibuka: { error } atau { files, patch }; dikosongkan saat dialog ditutup
+  const [diffs, setDiffs] = useState({}) // perubahan per task atau pekerjaan yang dibuka: { error } atau { files, patch }; dikosongkan saat dialog ditutup
+  const [epicPending, setEpicPending] = useState(0) // pekerjaan besar yang menunggu keputusan pemilik
   const closeRef = useRef(null)
   const { on: owner, call: ownerCall } = control
 
@@ -113,19 +115,20 @@ export function Board({ tasks, agents, agentsStatic, events, onDelete, control, 
 
   // perubahan (diff) task bercabang dimuat saat dialognya dibuka; sebelum jawaban datang tampil "memuat"
   const wantsDiff = Boolean(open && owner && open.mode === 'claude' && open.branch)
-  const diff = wantsDiff ? (diffs[open.id] ?? 'loading') : null
-  const openId = open?.id
+  // pekerjaan besar dan task punya nomor sendiri-sendiri, jadi kuncinya diberi awalan
+  const openId = open ? `${open.epic ? 'epics' : 'tasks'}/${open.id}` : null
+  const diff = wantsDiff ? (diffs[openId] ?? 'loading') : null
   useEffect(() => {
     if (!wantsDiff) return undefined
     let stale = false
-    ownerCall('GET', `/api/tasks/${openId}/diff`)
+    ownerCall('GET', `/api/${openId}/diff`)
       .then(async (r) => { const j = await r.json().catch(() => ({})); if (!stale) setDiffs((d) => ({ ...d, [openId]: r.ok ? j : { error: j.error ?? 'Perubahan tidak bisa dimuat' } })) })
       .catch(() => { if (!stale) setDiffs((d) => ({ ...d, [openId]: { error: 'Server tidak terjangkau' } })) })
     return () => { stale = true }
   }, [wantsDiff, openId, ownerCall])
 
   // jumlah task Claude yang menunggu keputusanmu tampil di judul tab; bunyi saat bertambah (bukan saat halaman dibuka)
-  const pending = control.on ? tasks.filter((t) => t.mode === 'claude' && t.status === 'review').length : 0
+  const pending = control.on ? tasks.filter((t) => t.mode === 'claude' && t.status === 'review').length + epicPending : 0
   const prevPending = useRef(null)
   const baseTitle = useRef(document.title)
   useEffect(() => {
@@ -166,7 +169,8 @@ export function Board({ tasks, agents, agentsStatic, events, onDelete, control, 
     const session = mine && t.status === 'in_progress' ? control.sessions?.find((s) => s.id === t.session_id) : null
     const subagents = (session?.subagents ?? []).filter((x) => x.state === 'running').map((x) => x.type)
     const canOpen = t.status === 'done'
-    const canDelete = t.status === 'todo' || t.status === 'done' || (mine && t.status === 'review')
+    // task pekerjaan besar dibuang lewat pekerjaannya, karena task lain menunggunya
+    const canDelete = !t.epic_id && (t.status === 'todo' || t.status === 'done' || (mine && t.status === 'review'))
     return (
       <div
         key={t.id}
@@ -188,9 +192,12 @@ export function Board({ tasks, agents, agentsStatic, events, onDelete, control, 
           {claude && <div className="who">{CLAUDE}{mine && t.project_id ? `, ${projectName(t.project_id)}` : ''}{mine && t.cost > 0 ? `, ${usd(t.cost)}` : ''}</div>}
           {claude && t.status === 'in_progress' && (
             <div className="tlive">
-              {session
-                ? `${session.activity}${session.tools ? `, ${session.tools} tool` : ''}${subagents.length ? `. Subagent: ${subagents.join(', ')}` : ''}`
-                : 'Sedang dikerjakan'}
+              {mine && t.checks === 'jalan'
+                ? 'Server menjalankan tes dan build'
+                : session
+                  ? `${session.activity}${session.tools ? `, ${session.tools} tool` : ''}${subagents.length ? `. Subagent: ${subagents.join(', ')}` : ''}`
+                  : 'Sedang dikerjakan'}
+              {mine && t.attempts > 0 ? `. Perbaikan otomatis ke-${t.attempts}` : ''}
             </div>
           )}
           {!claude && t.status === 'review' && <div className="tnote">Menunggu review Tech Lead</div>}
@@ -198,7 +205,7 @@ export function Board({ tasks, agents, agentsStatic, events, onDelete, control, 
           {mine && t.branch && t.status === 'review' && <div className="tnote">Cabang {t.branch}</div>}
           {mine && t.status === 'review' && (
             <div className="tact">
-              <button className="btn sm go" disabled={busy} onClick={() => decide(t.id, 'approve')}>Setujui</button>
+              {!t.epic_id && <button className="btn sm go" disabled={busy} onClick={() => decide(t.id, 'approve')}>Setujui</button>}
               {t.session_id && (
                 <button className="btn sm" aria-expanded={revise?.id === t.id} onClick={() => setRevise(revise?.id === t.id ? null : { id: t.id, text: '' })}>
                   Revisi
@@ -207,7 +214,7 @@ export function Board({ tasks, agents, agentsStatic, events, onDelete, control, 
               <button className="btn sm" disabled={busy} onClick={() => decide(t.id, 'retry')}>Ulangi</button>
               {(t.detail || t.branch) && <button className="btn sm" aria-label={`Lihat detail: ${t.title}`} onClick={() => setOpen(t)}>Detail</button>}
               {t.branch && (
-                <button className="btn sm go full" disabled={busy} title="Gabungkan cabang task ke cabang aktif proyek" onClick={() => decide(t.id, 'merge')}>
+                <button className="btn sm go full" disabled={busy} title={t.epic_id ? 'Gabungkan cabang task ke cabang pekerjaan besarnya' : 'Gabungkan cabang task ke cabang aktif proyek'} onClick={() => decide(t.id, 'merge')}>
                   Gabungkan
                 </button>
               )}
@@ -255,12 +262,26 @@ export function Board({ tasks, agents, agentsStatic, events, onDelete, control, 
     )
   }
   const review = byStatus('review')
+  // Daftar pekerjaan besar dimuat ulang tiap server memberi sinyal task atau sesi berubah. Saat panel disembunyikan
+  // komponennya tetap hidup (tanpa tampilan) supaya hitungan di judul tab dan bunyinya jalan terus.
+  const epics = (
+    <Epics
+      key="epics"
+      control={control}
+      hidden={hidden}
+      reloadKey={`${tick}|${(control.sessions ?? []).map((s) => s.state).join()}`}
+      onOpen={(e) => setOpen({ ...e, epic: true, mode: 'claude', output: e.note })}
+      onPending={setEpicPending}
+    />
+  )
 
   return (
     <>
+      {hidden && epics}
       {!hidden && (
         <>
           <aside className="side left" aria-label="Pekerjaan">
+            {epics}
             {section('in_progress', 'Tidak ada yang dikerjakan. Antrian kosong atau semua agent sibuk.')}
             {section('todo', 'Antrian kosong. Tambah task di bawah.')}
             {section('done', 'Belum ada task selesai.')}
@@ -282,7 +303,7 @@ export function Board({ tasks, agents, agentsStatic, events, onDelete, control, 
           <div className="dialog panel" role="dialog" aria-modal="true" aria-label={open.title} onClick={(e) => e.stopPropagation()}>
             <h2>{open.title}</h2>
             <div className="meta">
-              {open.mode === 'claude' ? CLAUDE : lookFor(open.agent_id).label}, {open.finished_at
+              {open.epic ? 'Pekerjaan besar' : open.mode === 'claude' ? CLAUDE : lookFor(open.agent_id).label}, {open.finished_at
                 ? `selesai ${new Date(open.finished_at).toLocaleTimeString()}`
                 : open.status === 'review' ? 'menunggu keputusan' : 'belum tercatat'}{open.branch ? `, cabang ${open.branch}` : ''}
             </div>
@@ -320,7 +341,8 @@ export function Board({ tasks, agents, agentsStatic, events, onDelete, control, 
 export function TaskForm({ onAdd, control }) {
   const [title, setTitle] = useState('')
   const [est, setEst] = useState(6)
-  const [who, setWho] = useState('sim') // 'sim' | 'claude'
+  const [who, setWho] = useState('sim') // 'sim' | 'claude' | 'epic' (pekerjaan besar untuk tim)
+  const [epic, setEpic] = useState({ projectId: '', prompt: '', budget: 10, auto: true })
   const [projectId, setProjectId] = useState('')
   const [prompt, setPrompt] = useState('')
   const [busy, setBusy] = useState(false)
@@ -330,7 +352,9 @@ export function TaskForm({ onAdd, control }) {
 
   const canClaude = control.on && control.projects.length > 0
   const claude = who === 'claude' && canClaude
+  const team = who === 'epic' && canClaude
   const chosen = control.projects.some((p) => p.id === projectId) ? projectId : (control.projects[0]?.id ?? '')
+  const epicProject = control.projects.some((p) => p.id === epic.projectId) ? epic.projectId : (control.projects[0]?.id ?? '')
 
   const loadKit = control.call
   useEffect(() => {
@@ -354,11 +378,22 @@ export function TaskForm({ onAdd, control }) {
     }
   }
 
+  const addEpic = async () => {
+    try {
+      const r = await control.call('POST', '/api/epics', { title: title.trim(), projectId: epicProject, prompt: epic.prompt, budget: Number(epic.budget), auto: epic.auto })
+      if (r.ok) return { ok: true }
+      const body = await r.json().catch(() => ({}))
+      return { ok: false, error: body.error ?? 'pekerjaan gagal ditambahkan' }
+    } catch {
+      return { ok: false, error: 'server tidak terjangkau' }
+    }
+  }
+
   const submit = async (e) => {
     e.preventDefault()
     if (!title.trim() || busy) return
     setBusy(true)
-    const res = claude ? await addClaude() : await onAdd(title.trim(), est)
+    const res = team ? await addEpic() : claude ? await addClaude() : await onAdd(title.trim(), est)
     setBusy(false)
     // gagal: judul tetap di kolom supaya tidak perlu diketik ulang
     if (res?.ok === false) return setError(res.error)
@@ -366,6 +401,7 @@ export function TaskForm({ onAdd, control }) {
     setTitle('')
     setPrompt('')
     setPicked(null)
+    setEpic((v) => ({ ...v, prompt: '' }))
   }
 
   return (
@@ -375,17 +411,20 @@ export function TaskForm({ onAdd, control }) {
         className="field title"
         value={title}
         onChange={(e) => setTitle(e.target.value)}
-        placeholder="Task baru, mis: fix bug login"
+        placeholder={team ? 'Nama pekerjaan, mis: aplikasi kasir' : 'Task baru, mis: fix bug login'}
         aria-label="Judul task baru"
         maxLength={80}
       />
       {control.on && (
-        <select className="field" value={claude ? 'claude' : 'sim'} onChange={(e) => setWho(e.target.value)} aria-label="Dikerjakan oleh">
+        <select className="field" value={team ? 'epic' : claude ? 'claude' : 'sim'} onChange={(e) => setWho(e.target.value)} aria-label="Dikerjakan oleh">
           <option value="sim">Agent simulasi</option>
-          <option value="claude" disabled={!canClaude}>{canClaude ? CLAUDE : `${CLAUDE} (tambah proyek dulu)`}</option>
+          <option value="claude" disabled={!canClaude}>{canClaude ? `${CLAUDE}, satu task` : `${CLAUDE} (tambah proyek dulu)`}</option>
+          <option value="epic" disabled={!canClaude}>{canClaude ? 'Tim Claude, pekerjaan besar' : 'Tim Claude (tambah proyek dulu)'}</option>
         </select>
       )}
-      {claude ? (
+      {team ? (
+        <EpicFields projects={control.projects} value={{ ...epic, projectId: epicProject }} onChange={setEpic} />
+      ) : claude ? (
         <>
           <select className="field" value={chosen} onChange={(e) => setProjectId(e.target.value)} aria-label="Proyek untuk Claude Code">
             {control.projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
@@ -418,7 +457,7 @@ export function TaskForm({ onAdd, control }) {
           ))}
         </select>
       )}
-      <button type="submit" className="btn go" disabled={busy}>Tambah task</button>
+      <button type="submit" className="btn go" disabled={busy || (team && !epic.prompt.trim())}>{team ? 'Serahkan ke tim' : 'Tambah task'}</button>
     </form>
   )
 }

@@ -33,7 +33,7 @@ export default function App() {
   const playerPosRef = useRef({ x: 0, z: 6 })
   const [orbitTarget, setOrbitTarget] = useState([0, 1, 6])
   const [quality, setQuality] = useState(() => FORCED_Q ?? savedQ())
-  const { agents, agentsStatic, tasks, peers, chat, events, online, sessionsTick, addTask, sendPos, sendChat } = useKantor()
+  const { agents, agentsStatic, tasks, peers, chat, events, online, sessionsTick, tasksTick, addTask, sendPos, sendChat } = useKantor()
   const control = useControl(sessionsTick)
   const [dmAgent, setDmAgent] = useState(null)
   const [hint, setHint] = useState(null) // petunjuk tombol F di dok: tempat yang bisa dipakai di dekat pemain
@@ -126,6 +126,7 @@ export default function App() {
         onDelete={deleteTask}
         control={control}
         hidden={!boardOn}
+        tick={tasksTick}
         form={<TaskForm onAdd={addTask} control={control} />}
       />
       <Sessions control={control} />

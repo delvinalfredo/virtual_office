@@ -114,7 +114,8 @@ export function createSessions({ projects, bin = 'claude', maxRunning = 3, timeo
     const run = s.run
     const args = [
       '-p', prompt, '--output-format', 'stream-json', '--verbose',
-      '--permission-mode', 'acceptEdits', `--allowedTools=${project.allowedTools.join(',')}`,
+      '--permission-mode', 'acceptEdits', `--allowedTools=${(run?.tools ?? project.allowedTools).join(',')}`,
+      ...(run?.model ? ['--model', run.model] : []),
       ...(run?.agentsFile ? ['--agents', run.agentsFile] : []),
       ...(run?.appendPrompt ? ['--append-system-prompt', run.appendPrompt] : []),
       ...(run?.budget ? ['--max-budget-usd', String(run.budget)] : []),
@@ -162,7 +163,8 @@ export function createSessions({ projects, bin = 'claude', maxRunning = 3, timeo
   }
 
   return {
-    // run (opsional): { agentsFile, appendPrompt, budget } untuk sesi dari papan Kanban; dipakai lagi saat dilanjutkan
+    // run (opsional): { agentsFile, appendPrompt, budget, model, tools, cwd } untuk sesi dari papan Kanban; dipakai lagi
+    // saat dilanjutkan. tools mengganti daftar izin proyek (perencana hanya membaca dan menulis rencana).
     start({ projectId, prompt, run = null }) {
       const c = check(projectId, prompt)
       if (c.error) return c
@@ -203,8 +205,6 @@ export function createSessions({ projects, bin = 'claude', maxRunning = 3, timeo
         subagents: [...s.subagents.values()].map(({ type, state }) => ({ type, state })),
       }))
     },
-    // masih ada tempat untuk sesi baru? (dispatcher memeriksa ini sebelum menyiapkan cabang kerja)
-    hasSlot() { return running().length < maxRunning },
     // masih ada tempat untuk sesi baru? (dispatcher memeriksa ini sebelum menyiapkan cabang kerja)
     hasSlot() { return running().length < maxRunning },
     // id sesi Claude milik sesi dashboard: event hook dari sesi itu diabaikan karena subagent-nya sudah terbaca dari stream

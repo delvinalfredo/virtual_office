@@ -16,6 +16,7 @@ const MAX_PATCH = 200 * 1024
 const IDENT = ['-c', 'user.name=Kantor Virtual', '-c', 'user.email=kantor@localhost']
 
 export const branchOf = (taskId) => `kantor/task-${taskId}`
+const same = (a, b) => (process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b)
 
 async function git(cwd, args, timeout = 120000) {
   try {
@@ -62,20 +63,28 @@ function unlinkNodeModules(wt, rel) {
 }
 
 // Menyiapkan worktree untuk task. Mengembalikan { cwd, worktree, branch, base } atau { error }.
-export async function prepare({ projectDir, taskId, projectId, root }) {
+// from: titik awal cabang (HEAD proyek, atau cabang pekerjaan besar supaya task melihat hasil task sebelumnya).
+// branch dan tag: nama cabang dan penanda folder; bawaannya untuk task, pekerjaan besar memberi miliknya sendiri.
+// link: pasang node_modules proyek lewat junction. Dimatikan untuk proyek yang boleh memasang paket, supaya
+// `npm install` di satu cabang kerja tidak menulis ke node_modules proyek asli atau cabang lain.
+export async function prepare({ projectDir, taskId, projectId, root, from = 'HEAD', branch = branchOf(taskId), tag = `t${taskId}`, link = true }) {
   const info = await repoInfo(projectDir)
   if (!info) return { notRepo: true }
-  const head = await git(info.top, ['rev-parse', 'HEAD'])
-  if (!head.ok) return { error: 'repo belum punya commit, buat commit pertama dulu' }
+  const head = await git(info.top, ['rev-parse', '--verify', `${from}^{commit}`])
+  if (!head.ok) return { error: from === 'HEAD' ? 'repo belum punya commit, buat commit pertama dulu' : 'cabang awalnya sudah tidak ada' }
   const base = head.out.trim()
-  const branch = branchOf(taskId)
   // Nama folder unik per percobaan: di Windows folder yang baru dihapus bisa tertahan sebentar dan menolak dibuat ulang.
-  const wt = path.join(root, `${projectId}-t${taskId}-${Date.now().toString(36)}`)
+  const wt = path.join(root, `${projectId}-${tag}-${Date.now().toString(36)}`)
   // sisa percobaan sebelumnya untuk task yang sama (worktree dan cabangnya) dibuang dulu
   const list = await git(info.top, ['worktree', 'list', '--porcelain'])
   const NL = String.fromCharCode(10)
   for (const block of list.out.split(String.fromCharCode(13)).join("").split(NL + NL)) {
     const dir = /^worktree (.+)$/m.exec(block)?.[1]
+    // folder proyek sendiri yang sedang berada di cabang itu bukan sisa percobaan: jangan pernah dibuang
+    if (dir && same(path.resolve(dir), info.top)) {
+      if (new RegExp(`^branch refs/heads/${branch}$`, 'm').test(block)) return { error: `proyek sedang berada di cabang ${branch}, pindah ke cabang lain dulu` }
+      continue
+    }
     if (dir && new RegExp(`^branch refs/heads/${branch}$`, 'm').test(block)) {
       const old = await discard({ projectDir, worktree: path.resolve(dir), branch })
       if (old.error) return old
@@ -83,10 +92,10 @@ export async function prepare({ projectDir, taskId, projectId, root }) {
   }
   await git(info.top, ['branch', '-D', branch])
   fs.mkdirSync(root, { recursive: true })
-  const add = await git(info.top, ['worktree', 'add', '-q', '-b', branch, wt, 'HEAD'])
+  const add = await git(info.top, ['worktree', 'add', '-q', '-b', branch, wt, base])
   if (!add.ok) return { error: `cabang kerja gagal dibuat: ${firstLine(add.err)}` }
   const nm = path.join(projectDir, 'node_modules')
-  if (fs.existsSync(nm)) {
+  if (link && fs.existsSync(nm)) {
     try { fs.symlinkSync(nm, path.join(wt, info.rel, 'node_modules'), 'junction') } catch { /* tes dan build tak akan jalan, sisanya tetap */ }
   }
   return { cwd: path.join(wt, info.rel), worktree: wt, branch, base }
@@ -99,7 +108,9 @@ export async function snapshot({ worktree, title, taskId }) {
   const add = await git(worktree, ['add', '-A', '--', '.', ':(glob,exclude)**/node_modules', ':(glob,exclude)**/node_modules/**'])
   if (!add.ok) return { error: `gagal menyimpan perubahan: ${firstLine(add.err)}` }
   const changed = await git(worktree, ['diff', '--cached', '--quiet'])
-  if (changed.ok) {
+  // penggabungan yang masih terbuka (syncWith) selalu ditutup dengan commit, walau isinya sama dengan sebelumnya
+  const merging = (await git(worktree, ['rev-parse', '-q', '--verify', 'MERGE_HEAD'])).ok
+  if (changed.ok && !merging) {
     const h = await git(worktree, ['rev-parse', 'HEAD'])
     return { empty: true, sha: h.out.trim() }
   }
@@ -144,10 +155,43 @@ export async function mergeBranch({ projectDir, branch, title }) {
   return { ok: true, into: cur }
 }
 
+// Membawa cabang lain (cabang pekerjaan besar) ke folder kerja task, dipakai saat hasil task bentrok dengan
+// hasil task lain. Bila bentrok, penggabungan dibiarkan terbuka dengan penanda konflik di berkasnya: sesi task
+// dilanjutkan untuk merapikannya, lalu snapshot() menutupnya sebagai commit. { ok } | { conflicts } | { error }.
+export async function syncWith({ worktree, branch }) {
+  if (!fs.existsSync(worktree)) return { error: 'folder kerja sudah tidak ada' }
+  let m = await git(worktree, ['merge', '--no-edit', branch])
+  if (!m.ok && /ident|who you are|user\.(name|email)/i.test(m.err)) m = await git(worktree, [...IDENT, 'merge', '--no-edit', branch])
+  if (m.ok) return { ok: true }
+  const u = await git(worktree, ['-c', 'core.quotepath=off', 'diff', '--name-only', '--diff-filter=U'])
+  const conflicts = u.out.split('\n').map((l) => l.trim()).filter(Boolean)
+  if (conflicts.length) return { conflicts }
+  await git(worktree, ['merge', '--abort'])
+  return { error: firstLine(m.err) }
+}
+
+// Membatalkan penggabungan yang masih terbuka di folder kerja (dari syncWith), supaya penanda konflik tidak
+// pernah ikut tersimpan sebagai commit. true bila ada yang dibatalkan.
+export async function abortMerge(worktree) {
+  if (!worktree || !fs.existsSync(worktree)) return false
+  if (!(await git(worktree, ['rev-parse', '-q', '--verify', 'MERGE_HEAD'])).ok) return false
+  await git(worktree, ['merge', '--abort'])
+  return true
+}
+
+// Berkas yang masih memuat penanda konflik (dari daftar yang tadi bentrok).
+export function unresolved(worktree, files) {
+  return files.filter((f) => {
+    try { return /^(<{7} |>{7} )/m.test(fs.readFileSync(path.join(worktree, f), 'utf8')) } catch { return false }
+  })
+}
+
 // Membuang worktree dan cabang task. Melepas junction node_modules lebih dulu, dan berhenti bila ada tautan tersisa.
 export async function discard({ projectDir, worktree, branch }) {
   const info = await repoInfo(projectDir)
   if (!info) return { ok: true }
+  // folder proyek itu sendiri tidak pernah dibuang, apa pun yang tercatat di task
+  if (worktree && same(path.resolve(worktree), info.top)) return { error: 'folder kerja menunjuk ke folder proyek itu sendiri, tidak dibuang' }
   if (worktree && fs.existsSync(worktree)) {
     if (!unlinkNodeModules(worktree, info.rel) || findLinks(worktree).length) {
       return { error: 'tautan node_modules di cabang kerja tidak bisa dilepas, hapus folder itu manual' }

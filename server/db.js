@@ -31,7 +31,10 @@ CREATE TABLE IF NOT EXISTS tasks (
 // Kolom untuk task yang dikerjakan Claude Code. Database lama ditambah kolomnya saat server mulai.
 //   mode: 'sim' (agent simulasi) atau 'claude'; prompt, detail, session_id, project_id hanya dilihat pemilik komputer
 const have = new Set(db.prepare('PRAGMA table_info(tasks)').all().map((c) => c.name))
-for (const [name, def] of [['mode', "TEXT NOT NULL DEFAULT 'sim'"], ['project_id', 'TEXT'], ['session_id', 'TEXT'], ['prompt', 'TEXT'], ['detail', 'TEXT'], ['roles', 'TEXT'], ['branch', 'TEXT'], ['worktree', 'TEXT'], ['base', 'TEXT']]) {
+for (const [name, def] of [['mode', "TEXT NOT NULL DEFAULT 'sim'"], ['project_id', 'TEXT'], ['session_id', 'TEXT'], ['prompt', 'TEXT'], ['detail', 'TEXT'], ['roles', 'TEXT'], ['branch', 'TEXT'], ['worktree', 'TEXT'], ['base', 'TEXT'],
+  // task milik pekerjaan besar: epic_id, key (nama pendek di rencana), deps (JSON id task yang harus selesai dulu),
+  // attempts (berapa kali sesi dilanjutkan otomatis untuk memperbaiki), checks (hasil pemeriksaan server)
+  ['epic_id', 'INTEGER'], ['key', 'TEXT'], ['deps', 'TEXT'], ['attempts', 'INTEGER NOT NULL DEFAULT 0'], ['checks', 'TEXT']]) {
   if (!have.has(name)) db.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${def}`)
 }
 
@@ -55,6 +58,30 @@ CREATE TABLE IF NOT EXISTS session_log (
 );
 `)
 const KEEP_LOG = 200
+if (!db.prepare('PRAGMA table_info(session_log)').all().some((c) => c.name === 'epic_id')) db.exec('ALTER TABLE session_log ADD COLUMN epic_id INTEGER')
+
+// Pekerjaan besar: satu permintaan yang dipecah perencana menjadi beberapa task Claude. Hanya untuk pemilik komputer.
+//   status: planning (perencana berjalan) | planned (rencana jadi, menunggu dijalankan) | running | paused (anggaran habis)
+//           | review (semua task masuk cabang pekerjaan, menunggu digabung ke proyek) | done | failed (rencana gagal)
+db.exec(`
+CREATE TABLE IF NOT EXISTS epics (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT NOT NULL,
+  project_id TEXT NOT NULL,
+  prompt TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'planning',
+  auto INTEGER NOT NULL DEFAULT 1,
+  budget REAL NOT NULL,
+  session_id TEXT,
+  branch TEXT,
+  worktree TEXT,
+  base TEXT,
+  note TEXT,
+  detail TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  finished_at TEXT
+);
+`)
 
 // seed agents hanya sekali (tabel agents awalnya kosong)
 const n = db.prepare('SELECT COUNT(*) c FROM agents').get().c
@@ -82,6 +109,9 @@ export const getTasksByStatus = (status) =>
 // Semua sesi hilang saat restart, jadi id sesi di task Claude dikosongkan (id sesi dipakai ulang mulai dari s1).
 export const RESTART_NOTE = 'Sesi terputus karena server dimulai ulang. Pilih Ulangi untuk menjalankan lagi.'
 export const recoverStuckTasks = () => {
+  // perencana yang terputus tidak diulang otomatis; pemilik memilih Rencanakan ulang
+  db.prepare("UPDATE epics SET status='failed', note='Perencanaan terputus karena server dimulai ulang.' WHERE status='planning'").run()
+  db.prepare('UPDATE epics SET session_id=NULL').run()
   const claude = db.prepare(
     "UPDATE tasks SET status='review', output=? WHERE status='in_progress' AND mode='claude'"
   ).run(RESTART_NOTE).changes
@@ -105,9 +135,41 @@ export const insertClaudeTask = (title, projectId, prompt, roles = null) =>
     .run(title, projectId, prompt, roles ? JSON.stringify(roles) : null)
 // tampilan untuk semua pemain di jaringan: tanpa instruksi, hasil, proyek, peran, biaya, dan id sesi milik pemilik
 export const publicTask = (t) => {
-  const { prompt: _prompt, detail: _detail, session_id: _session, project_id: _project, roles: _roles, cost: _cost, branch: _branch, worktree: _worktree, base: _base, ...rest } = t
-  return rest
+  const { prompt: _prompt, detail: _detail, session_id: _session, project_id: _project, roles: _roles, cost: _cost, branch: _branch, worktree: _worktree, base: _base, epic_id: _epic, key: _key, deps: _deps, attempts: _attempts, checks: _checks, ...rest } = t
+  // judul task pekerjaan besar ditulis perencana dari isi proyek, jadi pemain lain hanya melihat nomornya
+  return _epic ? { ...rest, title: `Bagian pekerjaan besar #${rest.id}` } : rest
 }
+
+// ---- pekerjaan besar ----
+// Biaya pekerjaan disimpan di barisnya sendiri (spent), bukan dijumlah dari session_log yang dipangkas 200 baris:
+// kalau tidak, angka pekerjaan lama menyusut dan batas anggarannya ikut longgar.
+if (!db.prepare('PRAGMA table_info(epics)').all().some((c) => c.name === 'spent')) db.exec('ALTER TABLE epics ADD COLUMN spent REAL NOT NULL DEFAULT 0')
+const EPIC_COST = 'e.spent AS cost'
+export const addEpicCost = (id, cost) => db.prepare('UPDATE epics SET spent = spent + ? WHERE id=?').run(cost, id)
+export const insertEpic = ({ title, projectId, prompt, budget, auto }) =>
+  db.prepare('INSERT INTO epics (title, project_id, prompt, budget, auto) VALUES (?,?,?,?,?)').run(title, projectId, prompt, budget, auto ? 1 : 0).lastInsertRowid
+export const getEpic = (id) => db.prepare(`SELECT e.*, ${EPIC_COST} FROM epics e WHERE e.id=?`).get(id)
+export const getEpics = () => db.prepare(`SELECT e.*, ${EPIC_COST} FROM epics e ORDER BY e.id DESC`).all()
+export const getEpicBySession = (sid) => db.prepare("SELECT * FROM epics WHERE session_id=? AND status='planning'").get(sid)
+export const getEpicTasks = (epicId) => db.prepare('SELECT * FROM tasks WHERE epic_id=? ORDER BY id ASC').all(epicId)
+// sama seperti updateTask: hanya dipanggil dengan kunci yang ditulis di kode server, tidak pernah dari isi permintaan
+export const updateEpic = (id, fields) => {
+  const keys = Object.keys(fields)
+  db.prepare(`UPDATE epics SET ${keys.map((k) => `${k}=?`).join(', ')} WHERE id=?`).run(...keys.map((k) => fields[k]), id)
+}
+export const deleteEpic = db.transaction((id) => {
+  db.prepare('DELETE FROM tasks WHERE epic_id=?').run(id)
+  db.prepare('DELETE FROM epics WHERE id=?').run(id)
+})
+// Menyimpan task hasil rencana dalam satu transaksi. deps di rencana memakai key; di database menjadi id task.
+export const insertPlan = db.transaction((epic, tasks) => {
+  const ins = db.prepare("INSERT INTO tasks (title, mode, project_id, prompt, roles, epic_id, key, deps) VALUES (?, 'claude', ?, ?, ?, ?, ?, ?)")
+  const ids = {}
+  for (const t of tasks) {
+    ids[t.key] = ins.run(t.title, epic.project_id, t.prompt, t.roles ? JSON.stringify(t.roles) : null, epic.id, t.key, JSON.stringify(t.deps.map((k) => ids[k]))).lastInsertRowid
+  }
+  return ids
+})
 
 export const insertTask = (title, est) =>
   db.prepare('INSERT INTO tasks (title, est) VALUES (?,?)').run(title, est)
@@ -124,8 +186,8 @@ export const numTasks = {
 }
 
 export const logSession = (r) => {
-  db.prepare(`INSERT INTO session_log (task_id, project, state, runs, tools, denials, cost, seconds, subagents, result, error, started_at, ended_at)
-              VALUES (@task_id, @project, @state, @runs, @tools, @denials, @cost, @seconds, @subagents, @result, @error, @started_at, @ended_at)`).run(r)
+  db.prepare(`INSERT INTO session_log (task_id, epic_id, project, state, runs, tools, denials, cost, seconds, subagents, result, error, started_at, ended_at)
+              VALUES (@task_id, @epic_id, @project, @state, @runs, @tools, @denials, @cost, @seconds, @subagents, @result, @error, @started_at, @ended_at)`).run({ epic_id: null, ...r })
   db.prepare('DELETE FROM session_log WHERE id <= (SELECT MAX(id) FROM session_log) - ?').run(KEEP_LOG)
 }
 export const getHistory = (limit = 50) => db.prepare('SELECT * FROM session_log ORDER BY id DESC LIMIT ?').all(limit)

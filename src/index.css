@@ -266,6 +266,17 @@ button { cursor: pointer; }
 .roles summary { cursor: pointer; font-weight: 800; margin-bottom: var(--s1); }
 .pcheck { display: flex; align-items: center; gap: var(--s1); font-size: 12px; font-weight: 700; color: var(--muted); }
 .prow .pcheck { margin-top: var(--s1); }
+.prow { flex-wrap: wrap; }
+.pmanage a { color: inherit; font-weight: 800; }
+/* daftar task di dalam kartu pekerjaan besar: judul di kiri, keadaannya di kanan */
+.esteps { list-style: none; margin: var(--s2) 0 0; padding: var(--s1) 0 0; border-top: 2px solid var(--ink); display: grid; gap: 2px; font-size: 11px; font-weight: 700; }
+.esteps li { display: flex; justify-content: space-between; gap: var(--s2); }
+.esteps span { min-width: 0; overflow-wrap: anywhere; }
+.esteps small { flex: none; color: var(--muted); font-weight: 700; }
+.esteps .done span { text-decoration: line-through; }
+.esteps .review small { color: var(--ink); font-weight: 900; }
+.tact[hidden] { display: none; }
+.trev input.field, .taskform input[type="number"].field { width: 100%; min-height: 36px; font-size: 13px; }
 
 .perf { position: fixed; top: 52px; right: 50%; transform: translateX(50%); z-index: 60; padding: var(--s1) var(--s3); font-size: 12px; font-weight: 800; pointer-events: none; }
 

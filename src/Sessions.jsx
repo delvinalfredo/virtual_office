@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Team } from './Team'
 
 const STATE_LABEL = { running: 'Berjalan', stopping: 'Menghentikan', done: 'Selesai', error: 'Gagal', stopped: 'Dihentikan' }
 
@@ -11,6 +12,11 @@ export function Sessions({ control }) {
   const [pname, setPname] = useState('')
   const [ppath, setPpath] = useState('')
   const [pchecks, setPchecks] = useState(false)
+  const [nname, setNname] = useState('') // proyek baru dari nol
+  const [nparent, setNparent] = useState('')
+  const [nchecks, setNchecks] = useState(true)
+  const [nsetup, setNsetup] = useState(false)
+  const [kitNote, setKitNote] = useState(null) // { id, text }: hasil memasang kit ke sebuah proyek
   const [prompt, setPrompt] = useState('')
   const [busy, setBusy] = useState(false)
   const [cont, setCont] = useState(null) // { id, text }
@@ -59,6 +65,25 @@ export function Sessions({ control }) {
     e.preventDefault()
     if (!pname.trim() || !ppath.trim() || busy) return
     if (await changeProjects('POST', '/api/projects', { name: pname, path: ppath, checks: pchecks })) { setPname(''); setPpath(''); setPchecks(false) }
+  }
+
+  const newProject = async (e) => {
+    e.preventDefault()
+    if (!nname.trim() || !nparent.trim() || busy) return
+    if (await changeProjects('POST', '/api/projects/new', { name: nname, parent: nparent, checks: nchecks, setup: nsetup })) setNname('')
+  }
+
+  const putKit = async (p) => {
+    setBusy(true)
+    try {
+      const r = await call('POST', `/api/projects/${encodeURIComponent(p.id)}/kit`)
+      const j = await r.json().catch(() => ({}))
+      setKitNote({ id: p.id, text: r.ok ? (j.copied ? `${j.copied} berkas kit disalin. Commit di proyeknya bila sudah cocok.` : 'Kit sudah lengkap, tidak ada yang disalin.') : (j.error ?? 'Kit gagal dipasang') })
+    } catch {
+      setKitNote({ id: p.id, text: 'Server tidak terjangkau' })
+    } finally {
+      setBusy(false)
+    }
   }
 
   const start = async (e) => {
@@ -110,7 +135,20 @@ export function Sessions({ control }) {
                         />
                         Izinkan tes dan build
                       </label>
+                      <label className="pcheck">
+                        <input
+                          type="checkbox"
+                          checked={p.setup}
+                          disabled={busy}
+                          onChange={(e) => changeProjects('PATCH', `/api/projects/${encodeURIComponent(p.id)}`, { setup: e.target.checked })}
+                        />
+                        Izinkan pasang paket (npm install, npm create)
+                      </label>
+                      {kitNote?.id === p.id && <small role="status">{kitNote.text}</small>}
                     </span>
+                    <button type="button" className="btn sm" disabled={busy} title="Salin .claude dan CLAUDE.md ke proyek ini; berkas yang sudah ada tidak ditimpa" onClick={() => putKit(p)}>
+                      Pasang kit
+                    </button>
                     <button
                       type="button"
                       className="btn sm"
@@ -148,10 +186,38 @@ export function Sessions({ control }) {
               <button type="submit" className="btn sm" disabled={busy || !pname.trim() || !ppath.trim()}>Tambah proyek</button>
             </form>
             <p className="note">
-              Claude membaca dan mengedit file di folder ini. Perintah shell hanya npm test dan npm run build, dan hanya bila dicentang.
+              Claude membaca dan mengedit file di folder ini. Perintah shell hanya yang dicentang: npm test dan npm run build, atau npm install dan npm create.
               Hapus hanya mencabut dari daftar, foldernya tetap ada.
             </p>
           </details>
+          <details className="pmanage">
+            <summary>Proyek baru dari nol</summary>
+            <form className="sform" onSubmit={newProject}>
+              <input className="field" value={nname} maxLength={40} onChange={(e) => setNname(e.target.value)} placeholder="Nama proyek" aria-label="Nama proyek baru" />
+              <input
+                className="field"
+                value={nparent}
+                maxLength={500}
+                onChange={(e) => setNparent(e.target.value)}
+                placeholder="Folder induk, misalnya D:/Kodingan"
+                aria-label="Folder induk proyek baru"
+              />
+              <label className="pcheck">
+                <input type="checkbox" checked={nchecks} onChange={(e) => setNchecks(e.target.checked)} />
+                Izinkan tes dan build
+              </label>
+              <label className="pcheck">
+                <input type="checkbox" checked={nsetup} onChange={(e) => setNsetup(e.target.checked)} />
+                Izinkan pasang paket (perlu untuk membuat kerangka aplikasi)
+              </label>
+              <button type="submit" className="btn sm" disabled={busy || !nname.trim() || !nparent.trim()}>Buat proyek</button>
+            </form>
+            <p className="note">
+              Membuat folder baru di dalam folder induk, berisi repo git, kit (.claude dan CLAUDE.md), dan commit pertama.
+              Pasang paket berarti npm install dan npm create boleh dijalankan tim, termasuk skrip pasang milik paketnya; izin ini bisa diubah kapan saja di Kelola proyek. Folder yang sudah ada tidak dipakai.
+            </p>
+          </details>
+          <Team call={call} />
           {projects.length > 0 && (
             <form className="sform" onSubmit={start}>
               <select className="field" value={chosen} onChange={(e) => setProjectId(e.target.value)} aria-label="Proyek">

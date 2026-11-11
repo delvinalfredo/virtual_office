@@ -7,6 +7,9 @@ import path from 'node:path'
 export const DEFAULT_TOOLS = ['Read', 'Grep', 'Glob', 'Edit', 'Write', 'Agent']
 // Dua perintah tetap yang boleh dijalankan di proyek yang dicentang "tes dan build". Form hanya mengirim centang.
 export const CHECK_TOOLS = ['Bash(npm test)', 'Bash(npm run build)']
+// Proyek yang dicentang "pasang paket": memasang dependensi dan membuat kerangka aplikasi. Paket npm menjalankan
+// skrip pasangnya sendiri, jadi ini hanya untuk proyek yang memang kamu percayakan ke tim.
+export const SETUP_TOOLS = ['Bash(npm install)', 'Bash(npm install *)', 'Bash(npm create *)', 'Bash(npm init *)']
 const TOOL_OK = /^[\w(),:* ./-]+$/
 export const MAX_PROJECTS = 20
 const NAME_MAX = 40
@@ -28,8 +31,9 @@ export function loadProjects(file) {
     if (out.some((o) => o.id === id)) continue
     const tools = Array.isArray(p.allowedTools) ? p.allowedTools.filter((t) => typeof t === 'string' && TOOL_OK.test(t)).slice(0, 20) : []
     const checks = p.checks === true
+    const setup = p.setup === true
     const base = tools.length ? tools : DEFAULT_TOOLS
-    out.push({ id, name, path: dir, checks, allowedTools: checks ? [...new Set([...base, ...CHECK_TOOLS])] : base })
+    out.push({ id, name, path: dir, checks, setup, allowedTools: [...new Set([...base, ...(checks ? CHECK_TOOLS : []), ...(setup ? SETUP_TOOLS : [])])] })
   }
   return out
 }
@@ -71,19 +75,21 @@ export function addProject(file, input) {
     if (typeof r?.name === 'string' && slug(r.name.trim().slice(0, NAME_MAX)) === id) return { error: 'nama itu sudah dipakai proyek lain' }
     if (typeof r?.path === 'string' && r.path.trim() && sameDir(path.resolve(r.path), dir)) return { error: 'folder itu sudah terdaftar' }
   }
-  raw.push(input?.checks === true ? { name, path: dir, checks: true } : { name, path: dir })
+  raw.push({ name, path: dir, ...(input?.checks === true && { checks: true }), ...(input?.setup === true && { setup: true }) })
   writeRaw(file, raw)
   return { id }
 }
 
-// Mengubah izin "tes dan build" proyek yang sudah ada.
-export function setProjectChecks(file, id, checks) {
+// Mengubah izin proyek yang sudah ada: flags = { checks?, setup? }, hanya kunci boolean yang dikirim yang diubah.
+export function setProjectFlags(file, id, flags) {
   const raw = readRaw(file)
   if (raw === null) return { error: BROKEN }
   const at = raw.findIndex((r) => typeof r?.name === 'string' && slug(r.name.trim().slice(0, NAME_MAX)) === id)
   if (at < 0) return { error: 'proyek tidak ditemukan' }
-  if (checks === true) raw[at].checks = true
-  else delete raw[at].checks
+  for (const key of ['checks', 'setup']) {
+    if (flags?.[key] === true) raw[at][key] = true
+    else if (flags?.[key] === false) delete raw[at][key]
+  }
   writeRaw(file, raw)
   return { id }
 }

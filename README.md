@@ -62,6 +62,24 @@ Daftarkan folder yang boleh dipakai: salin `server/projects.example.json` menjad
 
 Keamanan: panel hanya muncul di komputer yang menjalankan server, memakai token acak tiap server start, dan menolak Host atau Origin non-lokal. Pemain lain di jaringan hanya melihat karakternya. Sesi memakai login Claude Code di komputer ini dan hanya boleh dimulai olehmu. Jangan membuka akses ini untuk orang lain.
 
+## Tim Claude: pekerjaan besar
+
+Di form task (panel kiri), pilih "Tim Claude, pekerjaan besar", pilih proyek, jelaskan apa yang mau dibuat, dan isi anggarannya. Alurnya:
+
+1. Tech Lead (sesi perencana) membaca proyek dan menulis rencana di `docs/plans/epic-N.md`, lalu memecahnya menjadi task dengan urutan ketergantungan.
+2. Task yang tidak saling menunggu dikerjakan bersamaan (maksimal tiga sesi), masing-masing di cabang git sendiri.
+3. Setelah tiap sesi, server menjalankan `npm test` dan `npm run build` sendiri (untuk proyek yang dicentang "Izinkan tes dan build"). Kalau gagal, sesi dilanjutkan otomatis untuk memperbaiki, maksimal dua kali.
+4. Task yang lulus digabung ke cabang pekerjaan (`kantor/epic-N`). Proyekmu belum disentuh.
+5. Setelah semua task selesai, kartu pekerjaan menunggu keputusanmu: lihat perubahannya, lalu Gabungkan ke proyek atau buang.
+
+Pekerjaan berhenti sendiri bila biayanya mencapai anggaran; naikkan anggaran di kartunya untuk melanjutkan. Proyek harus repo git yang sudah punya commit.
+
+Proyek baru dari nol: di panel "Sesi Claude", buka "Proyek baru dari nol", isi nama dan folder induk. Server membuat folder, repo git, menyalin kit (`.claude` dan `CLAUDE.md` dari repo ini), dan mendaftarkannya dengan izin yang kamu centang: tes dan build, serta pasang paket (`npm install`, `npm create`; perlu dicentang kalau tim harus membuat kerangka aplikasi dan memasang dependensinya). Untuk proyek yang sudah ada, tombol "Pasang kit" menyalin kit tanpa menimpa berkas yang ada.
+
+Peran tim: subagent di `.claude/agents` ikut ke setiap sesi. Peran tambahan bisa diambil dari [aitmpl.com](https://www.aitmpl.com/agents) lewat "Peran tim" di panel yang sama: tulis `kategori/nama`, baca isinya, lalu simpan. Yang tersimpan hanya nama, deskripsi, tool, model, dan instruksinya. Model tiap peran bisa diatur dengan baris `model:` (haiku, sonnet, opus) di berkasnya; model sesi task dan perencana lewat `KANTOR_MODEL` dan `KANTOR_PLAN_MODEL`.
+
+Soal biaya: tim yang bekerja bersamaan lebih cepat, bukan lebih murah. Tiap task adalah sesi baru yang membaca proyek dari awal, jadi untuk perubahan kecil satu task biasa tetap lebih hemat.
+
 Ukuran FPS: tambahkan `?perf` ke alamat halaman. `?q=0` sampai `?q=3` memaksa tingkat kualitas gambar, dan `?q=0` mengembalikan kualitas penuh bila aplikasi sempat menurunkannya sendiri.
 
 ## Data

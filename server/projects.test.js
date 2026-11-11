@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { addProject, removeProject, setProjectChecks, loadProjects, DEFAULT_TOOLS, CHECK_TOOLS } from './projects.js'
+import { addProject, removeProject, setProjectFlags, loadProjects, DEFAULT_TOOLS, CHECK_TOOLS } from './projects.js'
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kantor-proj-'))
 const dirA = path.join(tmp, 'a'); const dirB = path.join(tmp, 'b')
@@ -96,11 +96,11 @@ test('izin tes dan build: hanya dua perintah tetap, dan bisa dinyalakan serta di
   assert.deepEqual(CHECK_TOOLS, ['Bash(npm test)', 'Bash(npm run build)'])
   assert.equal(byId().dicentang.checks, true)
 
-  setProjectChecks(f, 'biasa', true)
+  setProjectFlags(f, 'biasa', { checks: true })
   assert.deepEqual(byId().biasa.allowedTools, [...DEFAULT_TOOLS, ...CHECK_TOOLS])
-  setProjectChecks(f, 'biasa', false)
+  setProjectFlags(f, 'biasa', { checks: false })
   assert.deepEqual(byId().biasa.allowedTools, DEFAULT_TOOLS)
-  assert.match(setProjectChecks(f, 'tidak-ada', true).error, /tidak ditemukan/)
+  assert.match(setProjectFlags(f, 'tidak-ada', { checks: true }).error, /tidak ditemukan/)
 })
 
 test('izin khusus di berkas digabung dengan tes dan build, tanpa dobel', () => {

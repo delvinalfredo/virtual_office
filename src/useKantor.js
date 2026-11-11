@@ -36,6 +36,8 @@ export function useKantor() {
   const [events, setEvents] = useState([]) // kejadian task dari server: {who,text,at}, terbaru di akhir
   const [online, setOnline] = useState(true)
   const [sessionsTick, setSessionsTick] = useState(0) // naik tiap server memberi sinyal sesi Claude berubah
+  // naik tiap sinyal task-update, termasuk perubahan pekerjaan besar yang tidak mengubah daftar task
+  const [tasksTick, setTasksTick] = useState(0)
   const wsRef = useRef(null)
   const agentSigRef = useRef('')
   const peerSigRef = useRef('')
@@ -89,6 +91,7 @@ export function useKantor() {
           setChat((c) => [...c.slice(-50), { ...m, seen: Date.now() }])
           sfx.key()
         } else if (m.type === 'task-update') {
+          setTasksTick((t) => t + 1)
           fetch('/api/tasks').then((r) => r.json()).then((next) => {
             const prev = tasksRef.current
             // chime ketika ada task baru berpindah ke done
@@ -149,5 +152,5 @@ export function useKantor() {
     }
   }, [])
 
-  return { agents, agentsStatic, tasks, peers, chat, events, online, sessionsTick, addTask, sendPos, sendChat }
+  return { agents, agentsStatic, tasks, peers, chat, events, online, sessionsTick, tasksTick, addTask, sendPos, sendChat }
 }
