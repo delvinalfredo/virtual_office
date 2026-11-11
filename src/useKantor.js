@@ -6,7 +6,7 @@ import { noteServerTime, push, resetInterp } from './interp'
 // dibaca per frame oleh karakternya. State React hanya berubah bila hal yang tampak berbeda (status, bubble,
 // siapa yang ada), jadi aplikasi tidak dirender ulang 20 kali per detik.
 const agentSig = (list) => list.map((a) => `${a.id}|${a.state}|${a.pose ?? ''}|${a.bubble ?? ''}|${a.label ?? ''}|${a.live ? 1 : 0}`).join('\n')
-const peerSig = (list) => list.map((p) => p.name).join('\n')
+const peerSig = (list) => list.map((p) => `${p.name}|${p.pose ?? ''}|${p.h ?? ''}`).join('\n')
 // Server lama belum mengirim cap waktu: pakai waktu tiba paket sebagai gantinya, supaya karakter tidak membeku.
 function ingestAgents(list, ts) {
   const now = performance.now()
@@ -131,9 +131,9 @@ export function useKantor() {
   }, [])
 
   // t: jam browser ini saat posisi diambil (performance.now), dikirim apa adanya sebagai ct
-  const sendPos = useCallback((name, x, z, t = performance.now()) => {
+  const sendPos = useCallback((name, x, z, t = performance.now(), pose, h) => {
     if (wsRef.current?.readyState === 1) {
-      wsRef.current.send(JSON.stringify({ type: 'player-pos', name, x, z, ct: +t.toFixed(1) }))
+      wsRef.current.send(JSON.stringify({ type: 'player-pos', name, x, z, ct: +t.toFixed(1), pose, h }))
     }
   }, [])
 

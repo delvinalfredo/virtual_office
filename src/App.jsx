@@ -36,6 +36,7 @@ export default function App() {
   const { agents, agentsStatic, tasks, peers, chat, online, sessionsTick, addTask, sendPos, sendChat } = useKantor()
   const control = useControl(sessionsTick)
   const [dmAgent, setDmAgent] = useState(null)
+  const [hint, setHint] = useState(null) // petunjuk tombol F di dok: tempat yang bisa dipakai di dekat pemain
   // papan task dan form bisa disembunyikan supaya kantornya kelihatan; pilihan diingat
   const [boardOn, setBoardOn] = useState(savedBoard)
   const toggleBoard = () => setBoardOn((v) => { try { localStorage.setItem('kantor-board', v ? 'off' : 'on') } catch { /* abaikan */ } return !v })
@@ -67,7 +68,7 @@ export default function App() {
 
   const onPos = useCallback((p) => {
     playerPosRef.current = p
-    sendPos(playerName, p.x, p.z, p.t)
+    sendPos(playerName, p.x, p.z, p.t, p.pose, p.h)
   }, [sendPos, playerName])
 
   const deleteTask = useCallback((id) => {
@@ -106,7 +107,7 @@ export default function App() {
         {FORCED_Q === null && <AutoQuality quality={quality} onDrop={setQuality} />}
         <SkyDeco />
         <Office />
-        <Player onPos={onPos} said={mySaid} free={cameraMode === 'orbit'} />
+        <Player onPos={onPos} onHint={setHint} said={mySaid} free={cameraMode === 'orbit'} />
         <AgentAvatars agents={agents} agentsStatic={agentsStatic} onAgentClick={setDmAgent} />
         <PeerAvatars peers={peers} saidBy={saidBy} />
         {cameraMode === 'orbit' && (
@@ -147,7 +148,7 @@ export default function App() {
             onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }}
           />
         </label>
-        <span>WASD jalan, Q/E putar, Enter chat</span>
+        <span>WASD jalan, Q/E putar, Enter chat{hint ? `, ${hint}` : ''}</span>
         <label>
           <input
             type="checkbox"

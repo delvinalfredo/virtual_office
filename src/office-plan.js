@@ -86,6 +86,85 @@ export const OBSTACLES = [
   [11.7, 0, 0.25, 0.85],
 ]
 
+// ---- tempat pakai ----
+// Tempat: x,z,h = posisi dan arah hadap saat sampai (agent disnap ke sini supaya pas di kursi atau kloset, walau
+// titiknya di dalam kotak tabrakan); ax,az = titik yang dituju jalan kaki bila berbeda; via = titik yang dilewati dulu;
+// pose = 'sit' duduk, 'game' duduk main konsol, 'play' berdiri main, tanpa pose berdiri. Dipakai server (agent) dan
+// klien (pemain, tombol F).
+export const SPOTS = {
+  toilet: [
+    { key: 'wc1', x: -10.6, z: -11.1, h: 0, ax: -10.6, az: -10.2, pose: 'sit' },
+    { key: 'wc2', x: -7.8, z: -11.1, h: 0, ax: -7.8, az: -10.2, pose: 'sit' },
+  ],
+  // lounge: semua menghadap TV di tembok depan; dudukan terbuka dari selatan, jadi datang lewat titik di depannya (via)
+  sofa: [
+    { key: 'sofa1', x: -8.5, z: 8.7, h: 0, via: { x: -8.5, z: 9.6 }, pose: 'sit' },
+    { key: 'sofa2', x: -7.5, z: 8.7, h: 0, via: { x: -7.5, z: 9.6 }, pose: 'sit' },
+  ],
+  game: [
+    { key: 'game1', x: -10.8, z: 9.05, h: 0, via: { x: -10.8, z: 10 }, pose: 'game' },
+    { key: 'game2', x: -5.2, z: 9.05, h: 0, via: { x: -5.2, z: 10 }, pose: 'game' },
+  ],
+  // ruang makan: kursi 0,6 dari tepi meja, jadi agent yang radiusnya 0,5 sampai tanpa loncatan
+  eat: [
+    { key: 'eat1', x: 4.2, z: 8.4, h: 0, pose: 'sit' },
+    { key: 'eat2', x: 5.8, z: 8.4, h: 0, pose: 'sit' },
+    { key: 'eat3', x: 4.2, z: 10.6, h: Math.PI, pose: 'sit' },
+    { key: 'eat4', x: 5.8, z: 10.6, h: Math.PI, pose: 'sit' },
+  ],
+  // pingpong: dua pemain di ujung meja, saling berhadapan
+  pingpong: [
+    { key: 'pp1', x: 7.5, z: 9.5, h: Math.PI / 2, pose: 'play' },
+    { key: 'pp2', x: 11.1, z: 9.5, h: -Math.PI / 2, pose: 'play' },
+  ],
+  arcade: [
+    { key: 'arc1', x: 10.6, z: -7, h: Math.PI / 2, pose: 'play' },
+    { key: 'arc2', x: 10.6, z: -8, h: Math.PI / 2, pose: 'play' },
+  ],
+  // vending, mesin kopi di counter pantry, dan dispenser air
+  coffee: [
+    { key: 'vend1', x: 10.6, z: -4, h: Math.PI / 2 },
+    { key: 'vend2', x: 10.6, z: -5.3, h: Math.PI / 2 },
+    { key: 'pan1', x: 10.5, z: 3.7, h: Math.PI / 2 },
+    { key: 'pan2', x: 10.5, z: 5.2, h: Math.PI / 2 },
+    { key: 'water', x: 10.75, z: 6.4, h: Math.PI / 2 },
+  ],
+  // berdiri di depan TV papan task, mengambil cetakan, dan membaca buku di rak
+  board: [
+    { key: 'board1', x: -9.6, z: -1.8, h: -Math.PI / 2 },
+    { key: 'board2', x: -9.6, z: -0.2, h: -Math.PI / 2 },
+  ],
+  print: [{ key: 'print', x: -10.5, z: 4, h: -Math.PI / 2 }],
+  read: [
+    { key: 'book1', x: -10.9, z: -5.5, h: -Math.PI / 2 },
+    { key: 'book2', x: 10.9, z: 0, h: Math.PI / 2 },
+    { key: 'book3', x: 10.6, z: -10.9, h: Math.PI },
+  ],
+}
+
+// kursi lead saat review; kursi tamu agen nyata ada di SEATS
+export const MEET_LEAD = { key: 'meet0', x: -1.6, z: -7.2, h: Math.PI, via: { x: -1.6, z: -6.7 }, pose: 'sit' }
+
+// Tempat yang bisa dicapai dengan jalan lurus dari pintu depan (agen belum punya pencarian rute): kursi sisi
+// selatan dan samping meja meeting (duduk, lewat pintu masuk ruang meeting yang lebar), lalu titik berdiri di
+// ruang meeting dan di lorong tengah antar kelompok meja. Sisi utara meja sengaja tidak dipakai, karena meja
+// menghadang jalan lurus ke sana.
+export const SEATS = [
+  { key: 'meet1', x: 1.6, z: -7.2, h: Math.PI, via: { x: 1.6, z: -6.7 }, pose: 'sit' },
+  { key: 'meet2', x: -2.6, z: -8.5, h: Math.PI / 2, via: { x: -3.6, z: -8.5 }, pose: 'sit' },
+  { key: 'meet3', x: 2.6, z: -8.5, h: -Math.PI / 2, via: { x: 3.6, z: -8.5 }, pose: 'sit' },
+  { key: 'meet10', x: -1.6, z: -9.8, h: 0, via: { x: -3.4, z: -10.3 }, pose: 'sit' }, { key: 'meet11', x: 1.6, z: -9.8, h: 0, via: { x: 3.4, z: -10.3 }, pose: 'sit' },
+  { key: 'meet4', x: 0, z: -6.2, h: Math.PI }, { key: 'meet5', x: -3.4, z: -6.4, h: Math.PI }, { key: 'meet6', x: 3.4, z: -6.4, h: Math.PI },
+  { key: 'meet7', x: -1.2, z: 2.5, h: Math.PI }, { key: 'meet8', x: 1.2, z: 2.5, h: Math.PI }, { key: 'meet9', x: 0, z: 5, h: Math.PI },
+]
+// kursi kerja yang kosong juga bisa diduduki pemain; arah hadap dari sisi sekat tempatnya
+const chairSpots = DESK_CHAIRS.map(([x, z]) => {
+  const s = SPINES.reduce((a, b) => (Math.abs(b - z) < Math.abs(a - z) ? b : a))
+  return { key: `chair-${x}-${z}`, x, z, h: z < s ? 0 : Math.PI, pose: 'sit' }
+})
+// semua tempat yang bisa dipakai pemain: tempat aktivitas agent, kursi meeting, dan kursi kerja yang kosong
+export const PLAYER_SPOTS = [...Object.values(SPOTS).flat(), ...SEATS.filter((s) => s.pose), MEET_LEAD, ...chairSpots]
+
 export function clampToRoom(p, half = 0.4) {
   const lim = WALL - half
   p.x = Math.max(-lim, Math.min(lim, p.x))

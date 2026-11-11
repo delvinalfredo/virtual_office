@@ -1,22 +1,33 @@
-import { useRef, useEffect, memo } from 'react'
+import { useRef, useEffect, useState, memo } from 'react'
 import { useFrame, useThree } from '@react-three/fiber'
 import * as THREE from 'three'
 import { useKeyboard } from './useKeyboard'
-import { clampToRoom, resolveObstacles } from './office-plan'
+import { clampToRoom, resolveObstacles, PLAYER_SPOTS } from './office-plan'
 import { damp, dampAngle } from './motion'
 import Humanoid from './Humanoid'
 import { Said } from './ChatBubble'
 
 const SPEED = 5
+const NEAR = 1.5 // jarak terjauh ke tempat yang bisa dipakai (tombol F)
+const LABEL = { sit: 'duduk', game: 'main game', play: 'main' }
 
 // said: chat terakhir pemain ini (dari App), tampil sebagai gelembung di atas kepala.
 // free: kamera bebas (OrbitControls) yang memegang kamera; pemain tidak menariknya dan WASD mengikuti arah pandang.
-function PlayerBase({ onPos = null, said = null, free = false }) {
+// onHint: dipanggil dengan teks petunjuk tombol F (atau null) saat ada tempat pakai di dekat pemain atau saat sedang memakainya.
+// Tombol F: duduk, main, atau berdiri di tempat terdekat (kursi, sofa, meja makan, pingpong, arcade, dan seterusnya);
+// WASD melepaskannya. Pose dan arah hadap dikirim ke pemain lain lewat onPos.
+function PlayerBase({ onPos = null, onHint = null, said = null, free = false }) {
   const keys = useKeyboard()
   const group = useRef()
   const pos = useRef(new THREE.Vector3(0, 0, 6))
   const vel = useRef({ x: 0, z: 0 }) // kecepatan sekarang: naik dan turun perlahan, bukan loncat ke SPEED
   const { camera } = useThree()
+  const [pose, setPose] = useState(null) // pose di tempat yang sedang dipakai: sit, game, play, atau null
+  const seat = useRef(null) // tempat yang sedang dipakai
+  const near = useRef(null) // tempat terdekat yang bisa dipakai
+  const hint = useRef(null)
+  const say = (text) => { if (hint.current !== text) { hint.current = text; onHint?.(text) } }
+  const leave = () => { seat.current = null; setPose(null) }
 
   // restore posisi terakhir dari localStorage
   useEffect(() => {
@@ -40,8 +51,22 @@ function PlayerBase({ onPos = null, said = null, free = false }) {
     return () => window.removeEventListener('wheel', onWheel)
   }, [])
 
+  // F: duduk atau berdiri. Diabaikan saat mengetik di kolom isian.
+  useEffect(() => {
+    const kd = (e) => {
+      if (e.key.toLowerCase() !== 'f' || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return
+      if (e.target instanceof HTMLElement && e.target.closest('input, textarea, select, [contenteditable]')) return
+      if (seat.current) { seat.current = null; setPose(null) }
+      else if (near.current) { seat.current = near.current; setPose(near.current.pose ?? null) }
+    }
+    window.addEventListener('keydown', kd)
+    return () => window.removeEventListener('keydown', kd)
+  }, [])
+
   useFrame((_, rawDt) => {
     const dt = Math.min(rawDt, 0.05)
+    // jalan melepaskan tempat yang sedang dipakai
+    if (seat.current && 'wasd'.split('').some((k) => keys.has(k))) leave()
     // rotasi kamera Q/E, gerakan pemain relatif ke arah kamera
     if (free) yaw.current = Math.atan2(camera.position.x - pos.current.x, camera.position.z - pos.current.z)
     else {
@@ -49,6 +74,16 @@ function PlayerBase({ onPos = null, said = null, free = false }) {
       if (keys.has('e')) yaw.current -= dt * 1.8
     }
 
+    if (seat.current) {
+      // duduk atau berdiri di tempat: posisi dan arah hadap dikunci, tanpa tabrakan (tempatnya boleh di dalam kotak kursi)
+      const s = seat.current
+      pos.current.set(s.x, 0, s.z)
+      vel.current.x = 0
+      vel.current.z = 0
+      group.current.rotation.y = dampAngle(group.current.rotation.y, s.h ?? group.current.rotation.y, 14, dt)
+      group.current.position.set(s.x, 0, s.z)
+      say('F atau WASD untuk berdiri')
+    } else {
     const sinY = Math.sin(yaw.current), cosY = Math.cos(yaw.current)
     let mx = 0, mz = 0
     if (keys.has('w')) { mx -= sinY; mz -= cosY }
@@ -73,6 +108,17 @@ function PlayerBase({ onPos = null, said = null, free = false }) {
       group.current.rotation.y = dampAngle(group.current.rotation.y, Math.atan2(vel.current.x, vel.current.z), 14, dt)
     }
     group.current.position.set(pos.current.x, 0, pos.current.z)
+
+    // tempat pakai terdekat, untuk tombol F dan petunjuk di dok
+    let best = null
+    let bd = NEAR
+    for (const sp of PLAYER_SPOTS) {
+      const d = Math.hypot(sp.x - pos.current.x, sp.z - pos.current.z)
+      if (d < bd) { bd = d; best = sp }
+    }
+    near.current = best
+    say(best ? `F untuk ${LABEL[best.pose] ?? 'pakai'}` : null)
+    }
     if (free) return
     const z = zoom.current
     const camY = z * 0.66
@@ -88,7 +134,7 @@ function PlayerBase({ onPos = null, said = null, free = false }) {
   useEffect(() => {
     let n = 0
     const iv = setInterval(() => {
-      const p = { x: pos.current.x, z: pos.current.z, t: performance.now() }
+      const p = { x: pos.current.x, z: pos.current.z, t: performance.now(), pose: seat.current?.pose, h: seat.current?.h }
       if (n++ % 10 === 0) {
         try { localStorage.setItem('kantor-pos', JSON.stringify({ x: p.x, z: p.z })) } catch { /* abaikan */ }
       }
@@ -99,7 +145,7 @@ function PlayerBase({ onPos = null, said = null, free = false }) {
 
   return (
     <group ref={group} position={[0, 0, 6]}>
-      <Humanoid id="kamu" />
+      <Humanoid id="kamu" working={pose === 'play' || pose === 'game'} sitting={pose === 'sit' || pose === 'game'} />
       <Said msg={said} />
     </group>
   )

@@ -5,7 +5,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import db, { getAgents, getTasks, getTasksByStatus, recoverStuckTasks, RESTART_NOTE, insertTask, updateTask, getTask, getRunningTaskBySession, insertClaudeTask, publicTask, logSession, getHistory, costSummary } from './db.js'
-import { clampToRoom, resolveObstacles, OBSTACLES, DESK_SEATS } from '../src/office-plan.js'
+import { clampToRoom, resolveObstacles, OBSTACLES, DESK_SEATS, SPOTS, SEATS, MEET_LEAD } from '../src/office-plan.js'
 import { parseHook } from './live.js'
 import crypto from 'node:crypto'
 import { checkControl } from './control.js'
@@ -37,61 +37,9 @@ const server = http.createServer(app)
 const wss = new WebSocketServer({ server, maxPayload: 4096 })
 
 // ---- tempat di kantor ----
-// Tempat: x,z,h = posisi dan arah hadap saat sampai (agent disnap ke sini supaya pas di kursi atau kloset,
-// walau titiknya di dalam kotak tabrakan); ax,az = titik yang dituju jalan kaki bila berbeda; pose = yang
-// dikirim ke klien ('sit' duduk, 'play' berdiri main). Tempat di dalam toilet dicapai lewat pintunya dulu,
-// karena agent berjalan lurus tanpa pencarian rute.
+// Tempat pakai (SPOTS, SEATS, MEET_LEAD, DESK_SEATS) ada di src/office-plan.js, dibagi dengan klien. Tempat di
+// dalam toilet dicapai lewat pintunya dulu, karena agent berjalan lurus tanpa pencarian rute.
 const TOILET = { door: { x: -9, z: -6.6 }, inside: (p) => p.x < -6.5 && p.z < -7.6 }
-const SPOTS = {
-  toilet: [
-    { key: 'wc1', x: -10.6, z: -11.1, h: 0, ax: -10.6, az: -10.2, pose: 'sit' },
-    { key: 'wc2', x: -7.8, z: -11.1, h: 0, ax: -7.8, az: -10.2, pose: 'sit' },
-  ],
-  // lounge: semua menghadap TV di tembok depan; dudukan terbuka dari selatan, jadi datang lewat titik di depannya (via)
-  sofa: [
-    { key: 'sofa1', x: -8.5, z: 8.7, h: 0, via: { x: -8.5, z: 9.6 }, pose: 'sit' },
-    { key: 'sofa2', x: -7.5, z: 8.7, h: 0, via: { x: -7.5, z: 9.6 }, pose: 'sit' },
-  ],
-  game: [
-    { key: 'game1', x: -10.8, z: 9.05, h: 0, via: { x: -10.8, z: 10 }, pose: 'game' },
-    { key: 'game2', x: -5.2, z: 9.05, h: 0, via: { x: -5.2, z: 10 }, pose: 'game' },
-  ],
-  // ruang makan: kursi 0,6 dari tepi meja, jadi agent yang radiusnya 0,5 sampai tanpa loncatan
-  eat: [
-    { key: 'eat1', x: 4.2, z: 8.4, h: 0, pose: 'sit' },
-    { key: 'eat2', x: 5.8, z: 8.4, h: 0, pose: 'sit' },
-    { key: 'eat3', x: 4.2, z: 10.6, h: Math.PI, pose: 'sit' },
-    { key: 'eat4', x: 5.8, z: 10.6, h: Math.PI, pose: 'sit' },
-  ],
-  // pingpong: dua pemain di ujung meja, saling berhadapan
-  pingpong: [
-    { key: 'pp1', x: 7.5, z: 9.5, h: Math.PI / 2, pose: 'play' },
-    { key: 'pp2', x: 11.1, z: 9.5, h: -Math.PI / 2, pose: 'play' },
-  ],
-  arcade: [
-    { key: 'arc1', x: 10.6, z: -7, h: Math.PI / 2, pose: 'play' },
-    { key: 'arc2', x: 10.6, z: -8, h: Math.PI / 2, pose: 'play' },
-  ],
-  // vending, mesin kopi di counter pantry, dan dispenser air
-  coffee: [
-    { key: 'vend1', x: 10.6, z: -4, h: Math.PI / 2 },
-    { key: 'vend2', x: 10.6, z: -5.3, h: Math.PI / 2 },
-    { key: 'pan1', x: 10.5, z: 3.7, h: Math.PI / 2 },
-    { key: 'pan2', x: 10.5, z: 5.2, h: Math.PI / 2 },
-    { key: 'water', x: 10.75, z: 6.4, h: Math.PI / 2 },
-  ],
-  // berdiri di depan TV papan task, mengambil cetakan, dan membaca buku di rak
-  board: [
-    { key: 'board1', x: -9.6, z: -1.8, h: -Math.PI / 2 },
-    { key: 'board2', x: -9.6, z: -0.2, h: -Math.PI / 2 },
-  ],
-  print: [{ key: 'print', x: -10.5, z: 4, h: -Math.PI / 2 }],
-  read: [
-    { key: 'book1', x: -10.9, z: -5.5, h: -Math.PI / 2 },
-    { key: 'book2', x: 10.9, z: 0, h: Math.PI / 2 },
-    { key: 'book3', x: 10.6, z: -10.9, h: Math.PI },
-  ],
-}
 // agent hanya bersuara untuk kerja dan aktivitas ini: satu bubble saat berangkat, lalu diam
 const ACT_BUBBLE = {
   toilet: 'ke toilet', sofa: 'istirahat', game: 'main game', arcade: 'main arcade', pingpong: 'main pingpong',
@@ -103,8 +51,6 @@ const ACT_STAY = {
 }
 // bobot memilih aktivitas saat senggang (sisanya jalan-jalan)
 const ACT_WEIGHT = [['sofa', 12], ['game', 12], ['arcade', 9], ['pingpong', 10], ['coffee', 10], ['eat', 12], ['board', 8], ['print', 5], ['read', 7]]
-// kursi lead saat review; kursi tamu agen nyata ada di SEATS
-const MEET_LEAD = { key: 'meet0', x: -1.6, z: -7.2, h: Math.PI, via: { x: -1.6, z: -6.7 }, pose: 'sit' }
 
 // Kursi kerja agent (DESK_SEATS) ada di src/office-plan.js; posisi meja di tabel agents (desk_x, desk_z) tidak dipakai lagi.
 function deskSpot(a) {
@@ -272,18 +218,6 @@ const LINGER_MS = Number(process.env.LIVE_LINGER_MS ?? 4000)
 const LIVE_STALE_MS = 15 * 60 * 1000 // SubagentStop yang tak pernah datang (sesi mati): pulangkan sendiri
 const DOOR = { x: 0, z: 10.4 }
 const DONE = 'Selesai' // klien (AgentAvatars.jsx) memakainya sebagai pemicu konfeti
-// Tempat yang bisa dicapai dengan jalan lurus dari pintu depan (agen belum punya pencarian rute): kursi sisi
-// selatan dan samping meja meeting (duduk, lewat pintu masuk ruang meeting yang lebar), lalu titik berdiri di
-// ruang meeting dan di lorong tengah antar kelompok meja. Sisi utara meja sengaja tidak dipakai, karena meja
-// menghadang jalan lurus ke sana.
-const SEATS = [
-  { key: 'meet1', x: 1.6, z: -7.2, h: Math.PI, via: { x: 1.6, z: -6.7 }, pose: 'sit' },
-  { key: 'meet2', x: -2.6, z: -8.5, h: Math.PI / 2, via: { x: -3.6, z: -8.5 }, pose: 'sit' },
-  { key: 'meet3', x: 2.6, z: -8.5, h: -Math.PI / 2, via: { x: 3.6, z: -8.5 }, pose: 'sit' },
-  { key: 'meet10', x: -1.6, z: -9.8, h: 0, via: { x: -3.4, z: -10.3 }, pose: 'sit' }, { key: 'meet11', x: 1.6, z: -9.8, h: 0, via: { x: 3.4, z: -10.3 }, pose: 'sit' },
-  { key: 'meet4', x: 0, z: -6.2, h: Math.PI }, { key: 'meet5', x: -3.4, z: -6.4, h: Math.PI }, { key: 'meet6', x: 3.4, z: -6.4, h: Math.PI },
-  { key: 'meet7', x: -1.2, z: 2.5, h: Math.PI }, { key: 'meet8', x: 1.2, z: 2.5, h: Math.PI }, { key: 'meet9', x: 0, z: 5, h: Math.PI },
-]
 // jam simulasi: naik tepat 50 ms tiap tick, apa pun kondisi timer. Klien memakainya (bukan waktu tiba paket)
 // untuk menginterpolasi gerak agent, jadi jitter jaringan dan timer tidak terlihat sebagai gerak patah.
 let simT = 0
@@ -364,7 +298,7 @@ function sayChat(m) {
 
 // daftar pemain lain untuk satu penerima: dirinya sendiri tidak ikut, jadi klien tidak perlu menyaring
 const peerList = (except) =>
-  [...peers].filter(([c]) => c !== except).map(([, q]) => ({ name: q.name, x: q.x, z: q.z, ts: q.ts, ct: q.ct }))
+  [...peers].filter(([c]) => c !== except).map(([, q]) => ({ name: q.name, x: q.x, z: q.z, ts: q.ts, ct: q.ct, pose: q.pose, h: q.h }))
 
 function broadcastPeers(skip = null) {
   for (const c of wss.clients) {
@@ -417,6 +351,9 @@ wss.on('connection', (ws) => {
       p.ts = Date.now() // cap waktu terima: cadangan bila klien pengirim tidak mengirim ct
       // ct: jam browser pengirim saat posisi diambil. Dibuang bila bukan angka biasa, agar tidak merusak garis waktu penerima.
       p.ct = Number.isFinite(m.ct) && m.ct >= 0 && m.ct < 1e12 ? m.ct : undefined
+      // pose (duduk, main) dan arah hadap hanya diterima dari daftar yang dikenal, supaya klien lain tidak menerima sampah
+      p.pose = ['sit', 'game', 'play'].includes(m.pose) ? m.pose : undefined
+      p.h = p.pose && Number.isFinite(m.h) && Math.abs(m.h) < 10 ? +(+m.h).toFixed(2) : undefined
       broadcastPeers(ws)
     } else if (m.type === 'chat' || m.type === 'dm-agent') {
       // batasi spam: satu pesan per 500 ms per koneksi
