@@ -8,13 +8,12 @@ import { Player } from './Avatar'
 import AgentAvatars from './AgentAvatars'
 import PeerAvatars from './PeerAvatars'
 import { Board, TaskForm } from './Board'
-import { Minimap } from './Minimap'
 import { ChatUI } from './ChatUI'
 import { AgentDM } from './AgentDM'
 import { Sessions } from './Sessions'
 import { useKantor } from './useKantor'
 import { useControl } from './useControl'
-import { useState, useRef, useCallback } from 'react'
+import { useState, useCallback, useMemo, useRef } from 'react'
 import { SKY_FOG, GROUND_BOUNCE } from './theme3d'
 
 // ?perf di alamat halaman menampilkan FPS dan jumlah draw call; ?q=0..3 memaksa tingkat kualitas
@@ -26,13 +25,20 @@ if (FORCED_Q !== null) { try { localStorage.setItem('kantor-q', String(FORCED_Q)
 // tingkat kualitas: 0 penuh, 1 resolusi 1x, 2 tanpa bayangan, 3 resolusi 0,75x tanpa bayangan
 const DPR = [[1, 1.5], 1, 1, 0.75]
 const savedQ = () => { try { return Math.min(3, Number(localStorage.getItem('kantor-q')) || 0) } catch { return 0 } }
+const savedBoard = () => { try { return localStorage.getItem('kantor-board') !== 'off' } catch { return true } }
 
 export default function App() {
   const [cameraMode, setCameraMode] = useState('follow')
+  // kamera bebas berputar di sekitar titik ini (posisi pemain saat mode dinyalakan)
+  const playerPosRef = useRef({ x: 0, z: 6 })
+  const [orbitTarget, setOrbitTarget] = useState([0, 1, 6])
   const [quality, setQuality] = useState(() => FORCED_Q ?? savedQ())
   const { agents, agentsStatic, tasks, peers, chat, online, sessionsTick, addTask, sendPos, sendChat } = useKantor()
   const control = useControl(sessionsTick)
   const [dmAgent, setDmAgent] = useState(null)
+  // papan task dan form bisa disembunyikan supaya kantornya kelihatan; pilihan diingat
+  const [boardOn, setBoardOn] = useState(savedBoard)
+  const toggleBoard = () => setBoardOn((v) => { try { localStorage.setItem('kantor-board', v ? 'off' : 'on') } catch { /* abaikan */ } return !v })
   // nama tersimpan di browser; kalau belum ada, acak sekali lalu diingat
   const [playerName, setPlayerName] = useState(() => {
     try {
@@ -42,8 +48,14 @@ export default function App() {
     return `kamu-${Math.floor(Math.random() * 900 + 100)}`
   })
   const [nameDraft, setNameDraft] = useState(playerName)
-  const teleportRef = useRef(null)
-  const playerPosRef = useRef({ x: 0, z: 6 })
+  // chat terakhir yang kukirim: gelembung di atas kepalaku. Nama di server bisa diberi suffix, jadi tidak
+  // dicari dari daftar chat; pemain lain dicari dari daftar chat lewat namanya.
+  const [mySaid, setMySaid] = useState(null)
+  const saidBy = useMemo(() => {
+    const m = {}
+    for (const c of chat) if (c.agent === null && c.seen) m[c.name] = c
+    return m
+  }, [chat])
 
   const commitName = () => {
     const next = nameDraft.trim().slice(0, 24)
@@ -61,6 +73,13 @@ export default function App() {
   const deleteTask = useCallback((id) => {
     fetch(`/api/tasks/${id}`, { method: 'DELETE' })
   }, [])
+
+  const say = (text) => {
+    sendChat(text)
+    setMySaid({ text, seen: Date.now() })
+  }
+
+  const active = tasks.filter((t) => t.status !== 'done').length
 
   return (
     <div className="stage">
@@ -87,15 +106,20 @@ export default function App() {
         {FORCED_Q === null && <AutoQuality quality={quality} onDrop={setQuality} />}
         <SkyDeco />
         <Office />
-        <Player onPos={onPos} teleportRef={teleportRef} />
+        <Player onPos={onPos} said={mySaid} free={cameraMode === 'orbit'} />
         <AgentAvatars agents={agents} agentsStatic={agentsStatic} onAgentClick={setDmAgent} />
-        <PeerAvatars peers={peers} />
-        {cameraMode === 'orbit' && <OrbitControls />}
+        <PeerAvatars peers={peers} saidBy={saidBy} />
+        {cameraMode === 'orbit' && (
+          <OrbitControls makeDefault target={orbitTarget} minDistance={2} maxDistance={70} maxPolarAngle={Math.PI / 2.05} />
+        )}
       </Canvas>
 
-      <Board tasks={tasks} onDelete={deleteTask} control={control} />
+      <button className="btn sm boardbtn" aria-pressed={boardOn} onClick={toggleBoard}>
+        {boardOn ? 'Sembunyikan papan' : `Papan task${active ? ` (${active})` : ''}`}
+      </button>
+      <Board tasks={tasks} onDelete={deleteTask} control={control} hidden={!boardOn} />
       <Sessions control={control} />
-      <ChatUI chat={chat} onSend={(t) => sendChat(t)} />
+      <ChatUI chat={chat} onSend={say} />
       {dmAgent && (
         <AgentDM
           agentId={dmAgent}
@@ -103,12 +127,7 @@ export default function App() {
           onSend={(t, agent) => sendChat(t, agent)}
         />
       )}
-      <Minimap
-        playerRef={playerPosRef}
-        agents={agents}
-        onTeleport={(p) => teleportRef.current?.(p)}
-      />
-      <TaskForm onAdd={addTask} control={control} />
+      {boardOn && <TaskForm onAdd={addTask} control={control} />}
 
       {!online && (
         <div role="status" className="status panel">
@@ -128,12 +147,15 @@ export default function App() {
             onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }}
           />
         </label>
-        <span>WASD atau panah untuk jalan, Q/E untuk memutar</span>
+        <span>WASD jalan, Q/E putar, Enter chat</span>
         <label>
           <input
             type="checkbox"
             checked={cameraMode === 'orbit'}
-            onChange={(e) => setCameraMode(e.target.checked ? 'orbit' : 'follow')}
+            onChange={(e) => {
+              if (e.target.checked) setOrbitTarget([playerPosRef.current.x, 1, playerPosRef.current.z])
+              setCameraMode(e.target.checked ? 'orbit' : 'follow')
+            }}
           />
           Kamera bebas
         </label>

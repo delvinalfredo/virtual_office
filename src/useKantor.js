@@ -5,7 +5,7 @@ import { noteServerTime, push, resetInterp } from './interp'
 // Posisi tidak lagi disimpan di state React. Tiap paket masuk ke penyimpan interpolasi (src/interp.js) dan
 // dibaca per frame oleh karakternya. State React hanya berubah bila hal yang tampak berbeda (status, bubble,
 // siapa yang ada), jadi aplikasi tidak dirender ulang 20 kali per detik.
-const agentSig = (list) => list.map((a) => `${a.id}|${a.state}|${a.bubble ?? ''}|${a.label ?? ''}|${a.live ? 1 : 0}`).join('\n')
+const agentSig = (list) => list.map((a) => `${a.id}|${a.state}|${a.pose ?? ''}|${a.bubble ?? ''}|${a.label ?? ''}|${a.live ? 1 : 0}`).join('\n')
 const peerSig = (list) => list.map((p) => p.name).join('\n')
 // Server lama belum mengirim cap waktu: pakai waktu tiba paket sebagai gantinya, supaya karakter tidak membeku.
 function ingestAgents(list, ts) {
@@ -80,7 +80,8 @@ export function useKantor() {
         } else if (m.type === 'sessions') {
           setSessionsTick((t) => t + 1)
         } else if (m.type === 'chat') {
-          setChat((c) => [...c.slice(-50), m])
+          // seen: jam browser ini saat pesan tiba, dipakai gelembung di atas kepala (riwayat dari snapshot tidak punya)
+          setChat((c) => [...c.slice(-50), { ...m, seen: Date.now() }])
           sfx.key()
         } else if (m.type === 'task-update') {
           fetch('/api/tasks').then((r) => r.json()).then((next) => {

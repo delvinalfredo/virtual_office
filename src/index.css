@@ -114,12 +114,12 @@ button { cursor: pointer; }
   user-select: none;
   animation: pop 0.22s ease-out;
 }
-.say.work { background: var(--mint); font-size: 12px; padding: 4px 8px; }
 @keyframes pop { from { transform: scale(0.7); opacity: 0; } }
 
 /* ---------- board task ---------- */
+.boardbtn { position: fixed; top: var(--s3); right: var(--s3); z-index: 11; }
 .board {
-  position: fixed; top: var(--s3); right: var(--s3); z-index: 10;
+  position: fixed; top: 52px; right: var(--s3); z-index: 10;
   display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--s2);
   left: var(--s3); max-width: 560px; margin-inline-start: auto;
 }
@@ -180,18 +180,11 @@ button { cursor: pointer; }
 .msg.old { opacity: 0.6; }
 .chat form { pointer-events: auto; margin-top: var(--s1); }
 .chat .field { width: 100%; }
-.hint { position: fixed; bottom: 32px; left: 50%; transform: translateX(-50%); z-index: 15; font-size: 12px; font-weight: 800; pointer-events: none; padding: var(--s1) var(--s3); background: var(--paper); border: 2px solid var(--ink); border-radius: 8px; }
 
-/* ---------- form task, minimap, dok kiri bawah ---------- */
+/* ---------- form task, dok kiri bawah ---------- */
 .taskform { position: fixed; bottom: var(--s4); right: var(--s4); z-index: 10; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--s2); }
 .taskform .field.title { width: 220px; }
 .err { width: 100%; padding: var(--s2) var(--s3); font-size: 12px; font-weight: 800; color: var(--danger); text-align: right; }
-.minimap { position: fixed; bottom: 70px; right: var(--s4); width: 140px; height: 140px; z-index: 20; overflow: hidden; cursor: crosshair; padding: 0; }
-.minimap .o { position: absolute; background: var(--col-progress); border: 1px solid var(--ink); border-radius: 2px; }
-.dot { position: absolute; width: 8px; height: 8px; transform: translate(-50%, -50%); border: 1px solid var(--ink); border-radius: 50%; background: var(--muted); }
-.dot.working { background: var(--green); }
-.dot.walking { background: var(--yellow); }
-.dot.me { width: 12px; height: 12px; background: var(--paper); border-width: 3px; }
 .dock { position: fixed; bottom: var(--s4); left: var(--s4); z-index: 10; display: flex; align-items: center; gap: var(--s3); padding: var(--s2) var(--s3); font-size: 13px; font-weight: 700; }
 .dock .field { width: 112px; min-height: 32px; padding: var(--s1) var(--s2); font-size: 13px; }
 .dock label { display: flex; align-items: center; gap: var(--s2); }

@@ -5,10 +5,13 @@ import { useKeyboard } from './useKeyboard'
 import { clampToRoom, resolveObstacles } from './office-plan'
 import { damp, dampAngle } from './motion'
 import Humanoid from './Humanoid'
+import { Said } from './ChatBubble'
 
 const SPEED = 5
 
-function PlayerBase({ onPos = null, teleportRef = null }) {
+// said: chat terakhir pemain ini (dari App), tampil sebagai gelembung di atas kepala.
+// free: kamera bebas (OrbitControls) yang memegang kamera; pemain tidak menariknya dan WASD mengikuti arah pandang.
+function PlayerBase({ onPos = null, said = null, free = false }) {
   const keys = useKeyboard()
   const group = useRef()
   const pos = useRef(new THREE.Vector3(0, 0, 6))
@@ -26,18 +29,6 @@ function PlayerBase({ onPos = null, teleportRef = null }) {
     camera.position.set(pos.current.x, 6, pos.current.z + 9)
   }, [camera])
 
-  // teleport callback untuk minimap
-  useEffect(() => {
-    if (teleportRef) {
-      teleportRef.current = ({ x, z }) => {
-        pos.current.set(x, 0, z)
-        vel.current.x = 0
-        vel.current.z = 0
-        camera.position.set(x, 6, z + 9)
-      }
-    }
-  }, [camera, teleportRef])
-
   const zoom = useRef(9) // jarak kamera dgn scroll
   const yaw = useRef(0) // arah pandang kamera (rad); Q/E rotasi
 
@@ -52,8 +43,11 @@ function PlayerBase({ onPos = null, teleportRef = null }) {
   useFrame((_, rawDt) => {
     const dt = Math.min(rawDt, 0.05)
     // rotasi kamera Q/E, gerakan pemain relatif ke arah kamera
-    if (keys.has('q')) yaw.current += dt * 1.8
-    if (keys.has('e')) yaw.current -= dt * 1.8
+    if (free) yaw.current = Math.atan2(camera.position.x - pos.current.x, camera.position.z - pos.current.z)
+    else {
+      if (keys.has('q')) yaw.current += dt * 1.8
+      if (keys.has('e')) yaw.current -= dt * 1.8
+    }
 
     const sinY = Math.sin(yaw.current), cosY = Math.cos(yaw.current)
     let mx = 0, mz = 0
@@ -79,6 +73,7 @@ function PlayerBase({ onPos = null, teleportRef = null }) {
       group.current.rotation.y = dampAngle(group.current.rotation.y, Math.atan2(vel.current.x, vel.current.z), 14, dt)
     }
     group.current.position.set(pos.current.x, 0, pos.current.z)
+    if (free) return
     const z = zoom.current
     const camY = z * 0.66
     camera.position.lerp(
@@ -105,9 +100,10 @@ function PlayerBase({ onPos = null, teleportRef = null }) {
   return (
     <group ref={group} position={[0, 0, 6]}>
       <Humanoid id="kamu" />
+      <Said msg={said} />
     </group>
   )
 }
 
-// props stabil, jadi pemain tidak dirender ulang tiap kali server mengirim posisi agent
+// props hanya berubah saat pemain mengirim chat, jadi pemain tidak dirender ulang tiap kali server mengirim posisi agent
 export const Player = memo(PlayerBase)

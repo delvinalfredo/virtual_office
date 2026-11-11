@@ -1,12 +1,13 @@
 import { useRef, useState } from 'react'
 import { useFrame } from '@react-three/fiber'
 import Humanoid from './Humanoid'
+import { Said } from './ChatBubble'
 import { dampAngle } from './motion'
 import { sample } from './interp'
 
 // avatar pemain lain: posisi dari interpolasi (src/interp.js), jadi geraknya konstan walau paket tiba tidak rata;
 // langkah kaki dihitung Humanoid dari gerakan itu
-function Peer({ name, fallback }) {
+function Peer({ name, fallback, said }) {
   const group = useRef()
   const motion = useRef({ speed: 0 })
   const [start] = useState(() => { const p = sample('peer', name); return [p?.x ?? fallback.x, 0, p?.z ?? fallback.z] })
@@ -26,15 +27,17 @@ function Peer({ name, fallback }) {
   return (
     <group ref={group} position={start}>
       <Humanoid id={name} motion={motion} />
+      <Said msg={said} />
     </group>
   )
 }
 
-export default function PeerAvatars({ peers }) {
+// saidBy: pesan chat terakhir per nama pemain (dari App), untuk gelembung di atas kepala
+export default function PeerAvatars({ peers, saidBy }) {
   return (
     <group>
       {peers.map((p) => (
-        <Peer key={p.name} name={p.name} fallback={{ x: p.x, z: p.z }} />
+        <Peer key={p.name} name={p.name} fallback={{ x: p.x, z: p.z }} said={saidBy[p.name]} />
       ))}
     </group>
   )

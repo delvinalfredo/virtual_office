@@ -31,29 +31,27 @@ export function ChatUI({ chat, onSend }) {
 
   const recent = chat.slice(-4)
 
+  // petunjuk "Enter untuk chat" ada di dok kiri bawah, jadi tidak ada pil petunjuk lagi di sini
   return (
-    <>
-      <div className="chat" aria-live="polite">
-        {recent.map((c, i) => (
-          <div key={c.at + i} className={`msg${c.agent !== null ? ' agent' : ''}${i === recent.length - 1 ? '' : ' old'}`}>
-            <b>{c.name}{c.agent !== null ? ' (agent)' : ''}:</b> {c.text}
-          </div>
-        ))}
-        {open && (
-          <form onSubmit={submit}>
-            <input
-              ref={inputRef}
-              className="field"
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              placeholder="Ketik pesan. Enter kirim, Esc tutup"
-              aria-label="Pesan chat"
-              maxLength={120}
-            />
-          </form>
-        )}
-      </div>
-      {!open && <div className="hint">Tekan Enter untuk chat</div>}
-    </>
+    <div className="chat" aria-live="polite">
+      {recent.map((c, i) => (
+        <div key={c.at + i} className={`msg${c.agent !== null ? ' agent' : ''}${i === recent.length - 1 ? '' : ' old'}`}>
+          <b>{c.name}{c.agent !== null ? ' (agent)' : ''}:</b> {c.text}
+        </div>
+      ))}
+      {open && (
+        <form onSubmit={submit}>
+          <input
+            ref={inputRef}
+            className="field"
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder="Ketik pesan. Enter kirim, Esc tutup"
+            aria-label="Pesan chat"
+            maxLength={120}
+          />
+        </form>
+      )}
+    </div>
   )
 }

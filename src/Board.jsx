@@ -57,7 +57,8 @@ const CLAUDE = 'Claude Code'
 
 // Papan Kanban. Task Claude Code tampil untuk semua pemain (judul dan status), tetapi proyek, kemajuan sesi,
 // hasil, dan tombol keputusan hanya muncul di komputer pemilik (control.on).
-export function Board({ tasks, onDelete, control }) {
+// hidden: kolom tidak digambar, tetapi komponen tetap hidup supaya hitungan di judul tab dan bunyinya jalan terus.
+export function Board({ tasks, onDelete, control, hidden = false }) {
   const [open, setOpen] = useState(null)
   const [showStats, setShowStats] = useState(false)
   const [revise, setRevise] = useState(null) // { id, text }
@@ -138,7 +139,7 @@ export function Board({ tasks, onDelete, control }) {
       </button>
       {showStats && <StatsPanel control={control} />}
 
-      <div className={`board${tasks.some((t) => t.mode === 'claude') ? ' wide' : ''}`}>
+      {!hidden && <div className={`board${tasks.some((t) => t.mode === 'claude') ? ' wide' : ''}`}>
         {COLS.map((c) => {
           const items = tasks.filter((t) => t.status === c.key)
           return (
@@ -229,7 +230,7 @@ export function Board({ tasks, onDelete, control }) {
             </section>
           )
         })}
-      </div>
+      </div>}
 
       {open && (
         <div className="backdrop" onClick={closeDialog}>
