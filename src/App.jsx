@@ -1,31 +1,28 @@
-import { Canvas } from '@react-three/fiber'
-import { OrbitControls } from '@react-three/drei'
-import Office from './Office'
-import SkyDeco from './SkyDeco'
-import Perf from './Perf'
-import AutoQuality from './AutoQuality'
-import { Player } from './Avatar'
-import AgentAvatars from './AgentAvatars'
-import PeerAvatars from './PeerAvatars'
 import { Board, TaskForm } from './Board'
 import { ChatUI } from './ChatUI'
 import { AgentDM } from './AgentDM'
 import { Sessions } from './Sessions'
 import { useKantor } from './useKantor'
 import { useControl } from './useControl'
-import { useState, useCallback, useMemo, useRef } from 'react'
-import { SKY_FOG, GROUND_BOUNCE } from './theme3d'
+import { useState, useCallback, useMemo, useRef, lazy, Suspense } from 'react'
 
-// ?perf di alamat halaman menampilkan FPS dan jumlah draw call; ?q=0..3 memaksa tingkat kualitas
+// three.js dan seluruh adegan dimuat belakangan, supaya panel dan chat tampil lebih dulu
+const Scene = lazy(() => import('./Scene'))
+
+// ?q=0..3 memaksa tingkat kualitas
 const QS = new URLSearchParams(location.search)
-const SHOW_PERF = QS.has('perf')
 const FORCED_Q = QS.has('q') ? Math.min(3, Math.max(0, Number(QS.get('q')) || 0)) : null
-// ?q=0 juga menghapus pilihan lama yang tersimpan, jadi cara mengembalikan kualitas penuh
 if (FORCED_Q !== null) { try { localStorage.setItem('kantor-q', String(FORCED_Q)) } catch { /* abaikan */ } }
-// tingkat kualitas: 0 penuh, 1 resolusi 1x, 2 tanpa bayangan, 3 resolusi 0,75x tanpa bayangan
-const DPR = [[1, 1.5], 1, 1, 0.75]
+
+// ?q=0 juga menghapus pilihan lama yang tersimpan, jadi cara mengembalikan kualitas penuh
 const savedQ = () => { try { return Math.min(3, Number(localStorage.getItem('kantor-q')) || 0) } catch { return 0 } }
-const savedBoard = () => { try { return localStorage.getItem('kantor-board') !== 'off' } catch { return true } }
+// layar sempit: panel tertutup dulu supaya kantornya kelihatan, kecuali pemain pernah memilih sendiri
+const savedBoard = () => {
+  try {
+    const v = localStorage.getItem('kantor-board')
+    return v === null ? innerWidth >= 900 : v !== 'off'
+  } catch { return innerWidth >= 900 }
+}
 
 export default function App() {
   const [cameraMode, setCameraMode] = useState('follow')
@@ -84,36 +81,23 @@ export default function App() {
 
   return (
     <div className="stage">
-      <Canvas
-        shadows
-        dpr={DPR[quality]}
-        camera={{ position: [0, 10, 14], fov: 50 }}
-        gl={{ alpha: true, antialias: true }}
-        onCreated={({ gl }) => gl.setClearColor(0x000000, 0)}
-      >
-        <fog attach="fog" args={[SKY_FOG, 40, 95]} />
-        <hemisphereLight args={['#ffffff', GROUND_BOUNCE, 0.75]} />
-        <directionalLight
-          position={[15, 25, 10]}
-          intensity={1.5}
-          castShadow={quality < 2}
-          shadow-mapSize={[2048, 2048]}
-          shadow-camera-left={-20}
-          shadow-camera-right={20}
-          shadow-camera-top={20}
-          shadow-camera-bottom={-20}
+      <Suspense fallback={<div role="status" className="status panel">Memuat kantor 3D.</div>}>
+        <Scene
+          quality={quality}
+          forcedQuality={FORCED_Q !== null}
+          onQuality={setQuality}
+          cameraMode={cameraMode}
+          orbitTarget={orbitTarget}
+          onPos={onPos}
+          onHint={setHint}
+          mySaid={mySaid}
+          agents={agents}
+          agentsStatic={agentsStatic}
+          onAgentClick={setDmAgent}
+          peers={peers}
+          saidBy={saidBy}
         />
-        {SHOW_PERF && <Perf quality={quality} />}
-        {FORCED_Q === null && <AutoQuality quality={quality} onDrop={setQuality} />}
-        <SkyDeco />
-        <Office />
-        <Player onPos={onPos} onHint={setHint} said={mySaid} free={cameraMode === 'orbit'} />
-        <AgentAvatars agents={agents} agentsStatic={agentsStatic} onAgentClick={setDmAgent} />
-        <PeerAvatars peers={peers} saidBy={saidBy} />
-        {cameraMode === 'orbit' && (
-          <OrbitControls makeDefault target={orbitTarget} minDistance={2} maxDistance={70} maxPolarAngle={Math.PI / 2.05} />
-        )}
-      </Canvas>
+      </Suspense>
 
       <button className="btn sm boardbtn" aria-pressed={boardOn} onClick={toggleBoard}>
         {boardOn ? 'Sembunyikan panel' : `Panel${active ? ` (${active})` : ''}`}

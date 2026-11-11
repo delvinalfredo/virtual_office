@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { Sec } from './Sec'
 
 const usd = (n) => `$${(n ?? 0).toFixed(2)}`
 const STAGE = {
@@ -63,8 +64,7 @@ export function Epics({ control, reloadKey, onOpen, onPending, hidden = false })
   }
 
   return (
-    <section className="sec epics" aria-label="Pekerjaan besar">
-      <h3>Pekerjaan besar <span>{list?.length ?? 0}</span></h3>
+    <Sec id="epics" className="epics" label="Pekerjaan besar" title="Pekerjaan besar" count={list?.length ?? 0}>
       {failed && <p role="alert" className="note bad">Daftar pekerjaan besar tidak termuat. Periksa apakah server masih jalan.</p>}
       {list?.map((e) => {
         const done = e.tasks.filter((t) => t.status === 'done').length
@@ -122,7 +122,7 @@ export function Epics({ control, reloadKey, onOpen, onPending, hidden = false })
           </div>
         )
       })}
-    </section>
+    </Sec>
   )
 }
 

@@ -290,17 +290,6 @@ function Plant({ x, z, scale = 1 }) {
   )
 }
 
-// window di dinding belakang: kuaca kaca + frame putih
-function Window({ x, y = 1.9, z = -WALL }) {
-  const w = 2
-  return (
-    <group position={[x, y, z + 0.11]}>
-      <Box size={[w, 1.4, 0.06]} pos={[0, 0, 0]} color="#bae3f2" />
-      <Box size={[w + 0.12, 1.5, 0.05]} pos={[0, 0, -0.05]} color="#fdfdfd" />
-      <Box size={[0.06, 1.4, 0.06]} pos={[0, 0, 0.03]} color="#fdfdfd" />
-    </group>
-  )
-}
 
 // Ruang meeting di tengah tembok belakang: dinding barat dan timur, dinding depan dengan pintu
 // masuk 2,4 m (agent memakai titik koridor di depan dan di dalam pintu), dan TV di dinding timur.

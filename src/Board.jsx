@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { sfx } from './sfx'
 import { lookFor } from './looks'
 import { Epics, EpicFields } from './Epics'
+import { Sec } from './Sec'
 
 const usd = (n) => `$${(n ?? 0).toFixed(2)}`
 const clock = (at) => new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
@@ -48,8 +49,7 @@ function Watch({ tasks, agents, agentsStatic, events, control }) {
           {cost && <div className="tile"><b>{usd(cost.today)}</b><span>biaya Claude hari ini</span></div>}
         </div>
       </section>
-      <section className="sec" aria-label="Aktivitas">
-        <h3>Aktivitas</h3>
+      <Sec id="aktivitas" label="Aktivitas" title="Aktivitas" count={events.length} defaultOpen={false}>
         {events.length === 0 && <p className="empty">Belum ada kejadian. Tambah task di panel kiri.</p>}
         <ul className="alist">
           {[...events].reverse().map((e) => {
@@ -62,9 +62,8 @@ function Watch({ tasks, agents, agentsStatic, events, control }) {
             )
           })}
         </ul>
-      </section>
-      <section className="sec" aria-label="Tim">
-        <h3>Tim <span>{working} dari {team.length} kerja</span></h3>
+      </Sec>
+      <Sec id="tim" label="Tim" title="Tim" count={`${working}/${team.length} kerja`}>
         {failed && <p className="empty">Jumlah task selesai tidak termuat.</p>}
         {guests > 0 && <p className="note">{guests} tamu Claude Code di ruang meeting.</p>}
         {team.map((x) => (
@@ -77,7 +76,7 @@ function Watch({ tasks, agents, agentsStatic, events, control }) {
             {x.done > 0 && <span aria-label={`${x.done} task selesai`}>{x.done}</span>}
           </div>
         ))}
-      </section>
+      </Sec>
     </>
   )
 }
@@ -254,11 +253,10 @@ export function Board({ tasks, agents, agentsStatic, events, onDelete, control, 
   const section = (key, empty) => {
     const items = byStatus(key)
     return (
-      <section className={`sec ${key}`} aria-label={SECTION[key]}>
-        <h3>{SECTION[key]} <span>{items.length}</span></h3>
+      <Sec id={key} className={key} label={SECTION[key]} title={SECTION[key]} count={items.length} defaultOpen={key !== 'done'}>
         {items.length === 0 && <p className="empty">{empty}</p>}
         {items.map(card)}
-      </section>
+      </Sec>
     )
   }
   const review = byStatus('review')
@@ -285,14 +283,13 @@ export function Board({ tasks, agents, agentsStatic, events, onDelete, control, 
             {section('in_progress', 'Tidak ada yang dikerjakan. Antrian kosong atau semua agent sibuk.')}
             {section('todo', 'Antrian kosong. Tambah task di bawah.')}
             {section('done', 'Belum ada task selesai.')}
-            {form}
+            <Sec id="form" label="Task baru" title="Task baru" keep>{form}</Sec>
           </aside>
           <aside className="side right" aria-label="Pantauan">
-            <section className="sec review" aria-label="Review">
-              <h3>{owner ? 'Butuh keputusanmu' : 'Review'} <span>{review.length}</span></h3>
+            <Sec id="review" className="review" label="Review" title={owner ? 'Butuh keputusanmu' : 'Review'} count={review.length}>
               {review.length === 0 && <p className="empty">{owner ? 'Tidak ada yang menunggu keputusan.' : 'Tidak ada yang menunggu review.'}</p>}
               {review.map(card)}
-            </section>
+            </Sec>
             <Watch tasks={tasks} agents={agents} agentsStatic={agentsStatic} events={events} control={control} />
           </aside>
         </>

@@ -6,7 +6,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import db, { getAgents, getTasks, getTasksByStatus, recoverStuckTasks, RESTART_NOTE, insertTask, updateTask, publicTask } from './db.js'
 import { clampToRoom, resolveObstacles, DESK_SEATS, SPOTS, SEATS, MEET_LEAD } from '../src/office-plan.js'
-import { TOILET, free, route, plan } from './route.js'
+import { TOILET, route, plan } from './route.js'
 import { parseHook } from './live.js'
 import crypto from 'node:crypto'
 import { checkControl } from './control.js'
@@ -347,7 +347,6 @@ wss.on('connection', (ws) => {
       // DM ke agent tertentu → canned reply dengan bubble pada agent
       const a = agents.get(String(m.agent ?? ''))
       if (a) {
-        const text = String(m.text ?? '').slice(0, 120)
         const replies = {
           programmer: ['oke, kucatat di backlog', 'kuberes sekitar 502 hari ini', 'coba cek board, tasknya jalan'],
           designer: ['mantap, ku masuk sprint berikut', 'warna? biru lagi dong', 'figma-nya lagi dibuka'],
@@ -665,12 +664,11 @@ app.delete('/api/tasks/:id', async (req, res) => {
   res.json({ ok: true })
 })
 
-// stats per agent: total task done, rata-rata waktu
+// stats per agent: total task done
 app.get('/api/stats', (_req, res) => {
   const rows = db.prepare(`
     SELECT agent_id AS id,
-           COUNT(*) AS done,
-           AVG(CAST(julianday(finished_at) - julianday(created_at) AS REAL)) AS avgDays
+           COUNT(*) AS done
     FROM tasks
     WHERE status='done' AND agent_id IS NOT NULL
     GROUP BY agent_id
@@ -680,7 +678,6 @@ app.get('/api/stats', (_req, res) => {
     return {
       id: a.id, role: a.role,
       done: r?.done ?? 0,
-      avgSec: r ? Math.round((r.avgDays ?? 0) * 86400 * 10) / 10 : 0,
     }
   })
   res.json(agents)
