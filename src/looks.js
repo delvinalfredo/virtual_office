@@ -16,6 +16,30 @@ const LOOKS = {
     label: 'Programmer 2', tag: '#7fe0d0', skin: '#e0ac7e', hair: '#1c1a1f', eye: '#3b2a1e',
     hairStyle: 'curly', shirt: '#14a8a0', pants: '#33393f', shoes: '#f4f1ea', gear: ['glasses'],
   },
+  prog3: {
+    label: 'Programmer 3', tag: '#ffc4d6', skin: '#c68863', hair: '#1c1a1f', eye: '#3b2a1e',
+    hairStyle: 'short', shirt: '#ef476f', pants: '#2c3e50', shoes: '#f4f1ea', gear: ['headphones'],
+  },
+  prog4: {
+    label: 'Programmer 4', tag: '#ffd49a', skin: '#ffd9b8', hair: '#7a3b1e', eye: '#6b3f26',
+    hairStyle: 'spiky', shirt: '#ff9f1c', pants: '#33393f', shoes: INK, gear: [],
+  },
+  prog5: {
+    label: 'Programmer 5', tag: '#a9cdff', skin: '#e0ac7e', hair: '#8a8f99', eye: '#2a5db0',
+    hairStyle: 'swept', shirt: '#4a3f6b', pants: '#26333f', shoes: '#f4f1ea', gear: ['glasses', 'beard'],
+  },
+  designer2: {
+    label: 'Designer 2', tag: '#ffc2d1', skin: '#f2c194', hair: '#2b2118', eye: '#2f6f4f',
+    hairStyle: 'bun', shirt: '#ff6f9c', pants: '#3d3d4e', shoes: '#ffd23f', gear: [],
+  },
+  designer3: {
+    label: 'Designer 3', tag: '#8ee8dd', skin: '#ffd9b8', hair: '#c9a227', eye: '#2a5db0',
+    hairStyle: 'bob', shirt: '#14b8a6', pants: '#4a3f6b', shoes: INK, gear: ['beret'],
+  },
+  qa2: {
+    label: 'QA 2', tag: '#d8c4ff', skin: '#f2c194', hair: '#4a2f1d', eye: '#3b2a1e',
+    hairStyle: 'curly', shirt: '#8e5ef2', pants: '#2c3e50', shoes: INK, gear: ['cap'],
+  },
   designer: {
     label: 'Designer', tag: '#d8c4ff', skin: '#ffd9b8', hair: '#a0432e', eye: '#2f6f4f',
     hairStyle: 'long', shirt: '#8e5ef2', pants: '#3d3d4e', shoes: '#ffd23f', gear: ['beret'],

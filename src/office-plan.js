@@ -2,19 +2,88 @@
 // (path agent). Sumber tunggal supaya collision konsisten.
 export const WALL = 12
 
+// Denah area kerja: dua kelompok (CLUSTER_X) x dua garis sekat (SPINES); tiap garis sekat dikelilingi dua baris
+// meja yang saling membelakangi, tiga meja per baris. Office.jsx menggambarnya dari konstanta yang sama.
+export const CLUSTER_X = [-4.8, 4.8]
+export const SPINES = [0, 5]
+// Jarak kursi dari garis sekat. Meja sampai 0,95 dari sekat; kotak tabrakan 0,9 (di bawah) membuat agent yang
+// radiusnya 0,5 berhenti 1,4 dari sekat, jadi duduk di 1,35 tanpa loncatan dan kaki masuk ke bawah meja.
+export const CHAIR_DZ = 1.35
+
+// Kursi kerja: tiap agent satu kursi. Datang tegak lurus dari ruang bebas di sisi kursinya (via), bukan menyusuri
+// baris kursi, supaya tidak lewat kursi lain: sisi utara pasang 1 dari z -3, koridor antar pasang dari z 2,5, sisi
+// selatan pasang 2 dari z 7,7. h = arah hadap: 0 menghadap +z (kursi sisi utara), PI menghadap -z.
+const seat = (cx, k, si, north) => {
+  const x = +(cx + k * 1.8).toFixed(2)
+  const z = +(SPINES[si] + (north ? -CHAIR_DZ : CHAIR_DZ)).toFixed(2)
+  const free = si === 0 ? (north ? -3 : 2.5) : north ? 2.5 : 7.7
+  return { x, z, h: north ? 0 : Math.PI, via: { x, z: free } }
+}
+export const DESK_SEATS = {
+  prog1: seat(-4.8, 1, 0, true),
+  prog2: seat(4.8, -1, 0, true),
+  designer: seat(-4.8, 1, 0, false),
+  qa: seat(4.8, -1, 0, false),
+  lead: seat(-4.8, 1, 1, true),
+  prog3: seat(4.8, -1, 1, true),
+  prog4: seat(-4.8, 0, 0, true),
+  designer2: seat(4.8, 0, 0, false),
+  qa2: seat(-4.8, 0, 1, true),
+  prog5: seat(-4.8, 1, 1, false),
+  designer3: seat(4.8, -1, 1, false),
+}
+const isSeat = (x, z) => Object.values(DESK_SEATS).some((d) => Math.abs(d.x - x) < 0.01 && Math.abs(d.z - z) < 0.01)
+
+// pasang baris meja: satu kotak per pasang (sekat dan dua baris meja)
+export const CLUSTERS = CLUSTER_X.flatMap((cx) => SPINES.map((s) => [cx, s, 2.75, 0.9]))
+// kursi kerja yang kosong ikut jadi penghalang (agent dan pemain tidak menembusnya); kursi yang dipakai agent tidak
+export const DESK_CHAIRS = CLUSTER_X.flatMap((cx) => SPINES.flatMap((s) => [-1.8, 0, 1.8].flatMap((dx) =>
+  [s - CHAIR_DZ, s + CHAIR_DZ].map((z) => [cx + dx, z, 0.28, 0.28]),
+))).filter(([x, z]) => !isSeat(x, z))
+
 // obstacle: [cx, cz, halfW, halfZ] — kotak AABB di lantai
 export const OBSTACLES = [
-  // 4 meja kerja (2.4 x 1.2 + margin)
-  [-4, 4, 1.3, 0.75],
-  [-4, 1, 1.3, 0.75],
-  [4, 4, 1.3, 0.75],
-  [4, 1, 1.3, 0.75],
-  // meja meeting (4 x 2)
-  [0, -7, 2.2, 1.2],
-  // lounge: sofa & meja pingpong
-  [-8, 10.5, 1.2, 0.55],
-  [-10.6, 7, 0.55, 1.2],
-  [-6.5, 6, 1.3, 0.8],
+  ...CLUSTERS,
+  ...DESK_CHAIRS,
+  // ruang meeting (x -5 sampai 5, z -12 sampai -5): dinding barat, timur, dinding depan dengan pintu 2,4 m di tengah
+  // (x -1,2 sampai 1,2), dua daun pintu yang terbuka ke dalam, lalu meja meeting 4 x 2
+  [-5, -8.5, 0.1, 3.5],
+  [5, -8.5, 0.1, 3.5],
+  [-3.1, -5, 1.9, 0.1],
+  [3.1, -5, 1.9, 0.1],
+  [-1.14, -5.7, 0.06, 0.6],
+  [1.14, -5.7, 0.06, 0.6],
+  [0, -8.5, 2.2, 1],
+  // lounge barat daya, semuanya menghadap TV di tembok depan (z 11,8): sofa dan dua kursi santai (hanya sandaran dan
+  // lengan yang menghalangi, dudukannya terbuka dari selatan), meja kopi rendah di depan sofa
+  [-8, 8.27, 1.1, 0.15],
+  [-9.05, 8.6, 0.125, 0.45],
+  [-6.95, 8.6, 0.125, 0.45],
+  [-10.8, 8.65, 0.45, 0.12],
+  [-5.2, 8.65, 0.45, 0.12],
+  [-8, 10.5, 0.65, 0.35],
+  // ruang makan dan meja pingpong di sisi timur depan
+  [5, 9.5, 1.5, 0.5],
+  [9.3, 9.5, 1.3, 0.8],
+  // toilet pojok barat laut: dinding timur, dinding selatan (pintu di x -10..-8), sekat, dua kloset
+  [-6.5, -9.8, 0.1, 2.2],
+  [-11, -7.6, 1, 0.1],
+  [-7.25, -7.6, 0.75, 0.1],
+  [-9.9, -8.1, 0.06, 0.45], // daun pintu yang terbuka
+  [-9.2, -10.9, 0.06, 1.1],
+  [-10.6, -11.2, 0.3, 0.35],
+  [-7.8, -11.2, 0.3, 0.35],
+  // meja printer, counter pantry dan dispenser
+  [-11.5, 4, 0.4, 0.65],
+  [11.5, 4.5, 0.5, 1.55],
+  [11.5, 6.4, 0.25, 0.25],
+  // vending dan arcade di dinding timur
+  [11.5, -4.65, 0.4, 0.95],
+  [11.5, -7.5, 0.4, 1],
+  // rak buku: barat di sebelah toilet, timur di tembok belakang, dan timur di tengah
+  [-11.7, -5.5, 0.25, 0.85],
+  [10.6, -11.65, 0.85, 0.25],
+  [11.7, 0, 0.25, 0.85],
 ]
 
 export function clampToRoom(p, half = 0.4) {

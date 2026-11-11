@@ -1,6 +1,5 @@
 import { useRef, useState, useMemo } from 'react'
 import { useFrame } from '@react-three/fiber'
-import { Html } from '@react-three/drei'
 import Humanoid from './Humanoid'
 import Burst from './Burst'
 import { ChatBubble } from './ChatBubble'
@@ -13,7 +12,9 @@ const DONE_BUBBLES = ['Disetujui', 'Selesai']
 
 // avatar agent: Humanoid + posisi dari server (dihaluskan). Agen simulasi bisa diklik untuk DM;
 // agen nyata (live) tidak bisa, dan tampilannya mengikuti tipe subagent, bukan id-nya.
-function AgentAvatar({ id, look, label, fallback, state, bubble, onClick }) {
+// pose dari server: 'sit' duduk (meja, meeting, sofa, toilet, makan), 'game' duduk main konsol, 'play' berdiri main
+// (arcade, pingpong).
+function AgentAvatar({ id, look, label, fallback, state, bubble, pose, onClick }) {
   const group = useRef()
   const live = look !== undefined
   // posisi awal sekali saja (dari interpolasi bila sudah ada); sesudahnya digerakkan per frame di bawah
@@ -47,13 +48,8 @@ function AgentAvatar({ id, look, label, fallback, state, bubble, onClick }) {
       onPointerOver={live ? undefined : () => { document.body.style.cursor = 'pointer' }}
       onPointerOut={live ? undefined : () => { document.body.style.cursor = 'auto' }}
     >
-      <Humanoid id={look ?? id} label={label} working={state === 'working'} />
-      {state === 'working' && !live && (
-        <Html position={[0.7, 1.85, 0]} center zIndexRange={[6, 0]} pointerEvents="none">
-          <div className="say work">sedang kerja</div>
-        </Html>
-      )}
-      {bubble && (state !== 'working' || live) && <ChatBubble text={bubble} lift={lift} />}
+      <Humanoid id={look ?? id} label={label} working={state === 'working' || pose === 'play' || pose === 'game'} sitting={pose === 'sit' || pose === 'game'} />
+      {bubble && <ChatBubble text={bubble} lift={lift} />}
       {burstKey > 0 && <Burst key={burstKey} />}
     </group>
   )
@@ -72,6 +68,7 @@ export default function AgentAvatars({ agents, agentsStatic, onAgentClick }) {
             fallback={{ x: s.desk_x, z: s.desk_z }}
             state={rt.state}
             bubble={rt.bubble}
+            pose={rt.pose}
             onClick={onAgentClick}
           />
         )
@@ -85,6 +82,7 @@ export default function AgentAvatars({ agents, agentsStatic, onAgentClick }) {
           fallback={{ x: a.x, z: a.z }}
           state={a.state}
           bubble={a.bubble}
+          pose={a.pose}
         />
       ))}
     </group>

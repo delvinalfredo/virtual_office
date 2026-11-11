@@ -5,7 +5,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import db, { getAgents, getTasks, getTasksByStatus, recoverStuckTasks, RESTART_NOTE, insertTask, updateTask, getTask, getRunningTaskBySession, insertClaudeTask, publicTask, logSession, getHistory, costSummary } from './db.js'
-import { clampToRoom, resolveObstacles, WALL } from '../src/office-plan.js'
+import { clampToRoom, resolveObstacles, OBSTACLES, DESK_SEATS } from '../src/office-plan.js'
 import { parseHook } from './live.js'
 import crypto from 'node:crypto'
 import { checkControl } from './control.js'
@@ -36,15 +36,214 @@ app.use(express.static(path.join(__dirname, '..', 'dist')))
 const server = http.createServer(app)
 const wss = new WebSocketServer({ server, maxPayload: 4096 })
 
+// ---- tempat di kantor ----
+// Tempat: x,z,h = posisi dan arah hadap saat sampai (agent disnap ke sini supaya pas di kursi atau kloset,
+// walau titiknya di dalam kotak tabrakan); ax,az = titik yang dituju jalan kaki bila berbeda; pose = yang
+// dikirim ke klien ('sit' duduk, 'play' berdiri main). Tempat di dalam toilet dicapai lewat pintunya dulu,
+// karena agent berjalan lurus tanpa pencarian rute.
+const TOILET = { door: { x: -9, z: -6.6 }, inside: (p) => p.x < -6.5 && p.z < -7.6 }
+const SPOTS = {
+  toilet: [
+    { key: 'wc1', x: -10.6, z: -11.1, h: 0, ax: -10.6, az: -10.2, pose: 'sit' },
+    { key: 'wc2', x: -7.8, z: -11.1, h: 0, ax: -7.8, az: -10.2, pose: 'sit' },
+  ],
+  // lounge: semua menghadap TV di tembok depan; dudukan terbuka dari selatan, jadi datang lewat titik di depannya (via)
+  sofa: [
+    { key: 'sofa1', x: -8.5, z: 8.7, h: 0, via: { x: -8.5, z: 9.6 }, pose: 'sit' },
+    { key: 'sofa2', x: -7.5, z: 8.7, h: 0, via: { x: -7.5, z: 9.6 }, pose: 'sit' },
+  ],
+  game: [
+    { key: 'game1', x: -10.8, z: 9.05, h: 0, via: { x: -10.8, z: 10 }, pose: 'game' },
+    { key: 'game2', x: -5.2, z: 9.05, h: 0, via: { x: -5.2, z: 10 }, pose: 'game' },
+  ],
+  // ruang makan: kursi 0,6 dari tepi meja, jadi agent yang radiusnya 0,5 sampai tanpa loncatan
+  eat: [
+    { key: 'eat1', x: 4.2, z: 8.4, h: 0, pose: 'sit' },
+    { key: 'eat2', x: 5.8, z: 8.4, h: 0, pose: 'sit' },
+    { key: 'eat3', x: 4.2, z: 10.6, h: Math.PI, pose: 'sit' },
+    { key: 'eat4', x: 5.8, z: 10.6, h: Math.PI, pose: 'sit' },
+  ],
+  // pingpong: dua pemain di ujung meja, saling berhadapan
+  pingpong: [
+    { key: 'pp1', x: 7.5, z: 9.5, h: Math.PI / 2, pose: 'play' },
+    { key: 'pp2', x: 11.1, z: 9.5, h: -Math.PI / 2, pose: 'play' },
+  ],
+  arcade: [
+    { key: 'arc1', x: 10.6, z: -7, h: Math.PI / 2, pose: 'play' },
+    { key: 'arc2', x: 10.6, z: -8, h: Math.PI / 2, pose: 'play' },
+  ],
+  // vending, mesin kopi di counter pantry, dan dispenser air
+  coffee: [
+    { key: 'vend1', x: 10.6, z: -4, h: Math.PI / 2 },
+    { key: 'vend2', x: 10.6, z: -5.3, h: Math.PI / 2 },
+    { key: 'pan1', x: 10.5, z: 3.7, h: Math.PI / 2 },
+    { key: 'pan2', x: 10.5, z: 5.2, h: Math.PI / 2 },
+    { key: 'water', x: 10.75, z: 6.4, h: Math.PI / 2 },
+  ],
+  // berdiri di depan TV papan task, mengambil cetakan, dan membaca buku di rak
+  board: [
+    { key: 'board1', x: -9.6, z: -1.8, h: -Math.PI / 2 },
+    { key: 'board2', x: -9.6, z: -0.2, h: -Math.PI / 2 },
+  ],
+  print: [{ key: 'print', x: -10.5, z: 4, h: -Math.PI / 2 }],
+  read: [
+    { key: 'book1', x: -10.9, z: -5.5, h: -Math.PI / 2 },
+    { key: 'book2', x: 10.9, z: 0, h: Math.PI / 2 },
+    { key: 'book3', x: 10.6, z: -10.9, h: Math.PI },
+  ],
+}
+// agent hanya bersuara untuk kerja dan aktivitas ini: satu bubble saat berangkat, lalu diam
+const ACT_BUBBLE = {
+  toilet: 'ke toilet', sofa: 'istirahat', game: 'main game', arcade: 'main arcade', pingpong: 'main pingpong',
+  coffee: 'ngopi', eat: 'makan', board: 'cek papan task', print: 'ngeprint', read: 'baca buku',
+}
+const ACT_STAY = {
+  toilet: [5, 8], sofa: [8, 14], game: [10, 16], arcade: [7, 12], pingpong: [9, 14], coffee: [4, 6],
+  eat: [9, 14], board: [5, 9], print: [4, 6], read: [6, 10],
+}
+// bobot memilih aktivitas saat senggang (sisanya jalan-jalan)
+const ACT_WEIGHT = [['sofa', 12], ['game', 12], ['arcade', 9], ['pingpong', 10], ['coffee', 10], ['eat', 12], ['board', 8], ['print', 5], ['read', 7]]
+// kursi lead saat review; kursi tamu agen nyata ada di SEATS
+const MEET_LEAD = { key: 'meet0', x: -1.6, z: -7.2, h: Math.PI, via: { x: -1.6, z: -6.7 }, pose: 'sit' }
+
+// Kursi kerja agent (DESK_SEATS) ada di src/office-plan.js; posisi meja di tabel agents (desk_x, desk_z) tidak dipakai lagi.
+function deskSpot(a) {
+  const s = DESK_SEATS[a.id]
+  return s ? { key: `desk-${a.id}`, ...s, pose: 'sit' } : { key: `desk-${a.id}`, x: a.desk_x, z: a.desk_z }
+}
+
 // ---- state runtime ----
-// agent: { id, role, x, z, tx, tz, state: idle|walking|working, heading, task, bubble, restT }
+// agent: { id, role, x, z, tx, tz, state: idle|walking|working, heading, task, bubble, restT, pose, spot, go, fatigue }
+// Agent tambahan supaya meja kerja terpakai. Kolom desk_x dan desk_z tidak dipakai (kursi ada di DESK_SEATS).
+for (const [id, role, skill] of [['prog3', 'programmer', 1.1], ['prog4', 'programmer', 0.9], ['prog5', 'programmer', 1.0], ['designer2', 'designer', 0.9], ['designer3', 'designer', 1.0], ['qa2', 'qa', 1.0]]) {
+  db.prepare('INSERT OR IGNORE INTO agents (id, role, desk_x, desk_z, skill) VALUES (?,?,0,0,?)').run(id, role, skill)
+}
 const agents = new Map()
 for (const a of getAgents()) {
+  const desk = deskSpot(a)
   agents.set(a.id, {
     id: a.id, role: a.role, skill: a.skill,
-    x: a.desk_x, z: a.desk_z, tx: a.desk_x, tz: a.desk_z,
-    state: 'idle', heading: 0, task: null, bubble: null, restT: 0,
+    x: desk.x, z: desk.z, tx: desk.x, tz: desk.z,
+    state: 'idle', heading: desk.h ?? 0, task: null, bubble: null, restT: 0,
+    pose: null, spot: null, go: null, desk,
+    fatigue: 0, fatigueMax: 20 + Math.random() * 40,
   })
+}
+
+// ---- perutean sederhana ----
+// Agent berjalan lurus; kelompok meja dan dinding ruang meeting menghalangi banyak garis lurus. Daripada pencarian
+// rute penuh, ada beberapa titik di koridor yang bebas (lorong tengah, koridor antar meja, sisi barat dan timur,
+// area depan). Bila garis lurus ke tujuan tersangkut kotak tabrakan, agent mampir dulu ke titik terbaik yang
+// terlihat darinya. Dipanggil saat berangkat, saat sampai di titik singgah, dan saat tertahan.
+const WAYPOINTS = [
+  { x: 0, z: -3.5 }, { x: 0, z: 2.5 }, { x: 0, z: 7.7 },
+  { x: -9, z: -3.5 }, { x: -9, z: 2.5 }, { x: -9, z: 5.5 }, { x: 9, z: -3.5 }, { x: 9, z: 2.5 }, { x: 9, z: 7.2 }, { x: 9, z: -6.5 },
+  { x: -4, z: 7.7 }, { x: 2, z: 11.3 }, { x: -4, z: 11.3 }, { x: -6, z: 11.2 },
+  // lounge, ujung kiri dan kanan meja kopi
+  { x: -9.8, z: 11.2 }, { x: -9.8, z: 9.6 }, { x: -6.2, z: 9.6 },
+  // di dalam dan di depan pintu ruang meeting, dan dua sisi meja meeting menuju kursi sisi utara
+  { x: 0, z: -6.8 }, { x: -3.8, z: -6.8 }, { x: 3.8, z: -6.8 }, { x: -3.8, z: -10.4 }, { x: 3.8, z: -10.4 },
+  // di antara ruang makan dan meja pingpong, dan sisi timur meja pingpong
+  { x: 7.25, z: 7.9 }, { x: 7.25, z: 11.2 }, { x: 11.2, z: 7.3 },
+]
+// garis lurus bebas bila tak ada kotak tabrakan lebih dekat dari 0,25 (radius agent 0,5 tetap menyusur tepi dengan aman)
+function free(x0, z0, x1, z1) {
+  const n = Math.max(1, Math.ceil(Math.hypot(x1 - x0, z1 - z0) / 0.25))
+  for (let i = 0; i <= n; i++) {
+    const x = x0 + ((x1 - x0) * i) / n
+    const z = z0 + ((z1 - z0) * i) / n
+    for (const [cx, cz, hw, hz] of OBSTACLES) {
+      const dx = x - Math.max(cx - hw, Math.min(x, cx + hw))
+      const dz = z - Math.max(cz - hz, Math.min(z, cz + hz))
+      if (dx * dx + dz * dz < 0.0625) return false
+    }
+  }
+  return true
+}
+// Visibilitas antar titik koridor dihitung sekali (penghalangnya tetap). route() mencari jalur terpendek
+// dari titik asal ke tujuan lewat titik-titik itu (Dijkstra), atau [] bila garis lurus sudah bebas atau tidak ada jalur.
+const SEE = WAYPOINTS.map((w, i) => WAYPOINTS.map((v, j) => i !== j && free(w.x, w.z, v.x, v.z)))
+function route(from, to) {
+  if (free(from.x, from.z, to.x, to.z)) return []
+  const n = WAYPOINTS.length
+  const dist = WAYPOINTS.map((w) => (free(from.x, from.z, w.x, w.z) ? Math.hypot(w.x - from.x, w.z - from.z) : Infinity))
+  const prev = new Array(n).fill(-1)
+  const done = new Array(n).fill(false)
+  for (let k = 0; k < n; k++) {
+    let u = -1
+    for (let i = 0; i < n; i++) if (!done[i] && dist[i] < Infinity && (u < 0 || dist[i] < dist[u])) u = i
+    if (u < 0) break
+    done[u] = true
+    for (let v = 0; v < n; v++) {
+      if (!SEE[u][v]) continue
+      const d = dist[u] + Math.hypot(WAYPOINTS[v].x - WAYPOINTS[u].x, WAYPOINTS[v].z - WAYPOINTS[u].z)
+      if (d < dist[v]) { dist[v] = d; prev[v] = u }
+    }
+  }
+  let best = -1
+  let bd = Infinity
+  WAYPOINTS.forEach((w, i) => {
+    if (dist[i] === Infinity || !free(w.x, w.z, to.x, to.z)) return
+    const d = dist[i] + Math.hypot(to.x - w.x, to.z - w.z)
+    if (d < bd) { bd = d; best = i }
+  })
+  const out = []
+  for (let i = best; i >= 0; i = prev[i]) out.unshift({ x: WAYPOINTS[i].x, z: WAYPOINTS[i].z })
+  // titik yang sudah di kaki agent dibuang: kalau tidak, agent yang baru tiba di sebuah titik memilih titik itu lagi dan diam
+  while (out.length && Math.hypot(out[0].x - from.x, out[0].z - from.z) < 0.6) out.shift()
+  return out
+}
+// daftar titik singgah dari posisi agent lewat seq (titik wajib) ke targetnya (a.tx, a.tz), dengan jalur
+// koridor disisipkan di tiap ruas yang tidak bebas
+function plan(a, seq) {
+  const out = []
+  let cur = { x: a.x, z: a.z }
+  for (const p of [...seq, { x: a.tx, z: a.tz }]) {
+    out.push(...route(cur, p), { x: p.x, z: p.z })
+    cur = p
+  }
+  out.pop() // titik terakhir adalah target sendiri
+  return out
+}
+
+// Mengirim agent ke suatu tempat. Tempat dengan key dipesan (a.spot) supaya dua agent tidak merebut kursi
+// yang sama; act = aktivitas senggang (kunci ACT_STAY), dipakai saat sampai.
+function goTo(a, spot, act = null) {
+  a.tx = spot.ax ?? spot.x
+  a.tz = spot.az ?? spot.z
+  a.go = { spot, act }
+  a.spot = spot.key ?? null
+  a.pose = null
+  // keluar atau masuk toilet: lewat pintu dulu; kursi meja: lewat titik di lorong
+  // keluar dari tempat duduk lewat titik masuknya dulu (sofa terhalang sandaran, kursi meja lewat lorong)
+  const seq = [...(a.at?.via ? [a.at.via] : []), ...(TOILET.inside(a) !== TOILET.inside({ x: a.tx, z: a.tz }) ? [TOILET.door] : spot.via ? [spot.via] : [])]
+  a.at = null
+  a.vias = plan(a, seq)
+  dirty = true
+}
+
+// Sampai: duduk atau berdiri tepat di titik tempatnya dan menghadap arah yang ditentukan
+function settle(a) {
+  const g = a.go
+  if (!g) return
+  // target ikut dipindah ke titik duduk, kalau tidak agent akan jalan lagi ke titik pendekatannya
+  a.x = a.tx = g.spot.x
+  a.z = a.tz = g.spot.z
+  if (g.spot.h !== undefined) a.heading = g.spot.h
+  a.pose = g.spot.pose ?? null
+  a.at = g.spot
+  a.go = null
+  if (g.act) {
+    const [lo, hi] = ACT_STAY[g.act]
+    a.restT = lo + Math.random() * (hi - lo)
+    if (g.act === 'toilet') { a.fatigue = 0; a.fatigueMax = 20 + Math.random() * 40 }
+  }
+  dirty = true
+}
+
+const freeSpot = (list) => {
+  const used = new Set([...agents.values()].map((a) => a.spot))
+  return list.find((s) => !used.has(s.key)) ?? null
 }
 
 // player peers: ws → { name, want, x, z }  (want = nama yang diminta klien)
@@ -59,11 +258,9 @@ const SPEED = 3.5
 const ARRIVE = 0.35
 // teks bubble saat lead menyetujui task; klien (AgentAvatars.jsx) memakainya sebagai pemicu konfeti
 const APPROVED = 'Disetujui'
-const DESKS = Object.fromEntries(getAgents().map((a) => [a.id, { x: a.desk_x, z: a.desk_z }]))
-
-// spot santai untuk idle behavior
+// spot santai untuk idle behavior; semuanya di ruang bebas (lorong tengah, koridor antar meja, dekat TV, area depan)
 const HANGOUTS = [
-  { x: 0, z: 1 }, { x: -2, z: 2 }, { x: 2, z: 2 }, { x: -8, z: -1 }, { x: 8, z: -2 },
+  { x: 0, z: 2.5 }, { x: 0, z: 7.7 }, { x: -9, z: 1.5 }, { x: 9, z: 0.5 }, { x: -9, z: 5.5 }, { x: 1.5, z: 10.5 },
 ]
 
 // ---- agen nyata dari hook Claude Code (server/live.js, .claude/settings.json) ----
@@ -75,12 +272,17 @@ const LINGER_MS = Number(process.env.LIVE_LINGER_MS ?? 4000)
 const LIVE_STALE_MS = 15 * 60 * 1000 // SubagentStop yang tak pernah datang (sesi mati): pulangkan sendiri
 const DOOR = { x: 0, z: 10.4 }
 const DONE = 'Selesai' // klien (AgentAvatars.jsx) memakainya sebagai pemicu konfeti
-// Kursi yang bisa dicapai dengan jalan lurus dari pintu lewat lorong tengah (agen belum punya pencarian
-// rute): sisi selatan dan samping meja meeting, lalu beberapa titik di lorong antar baris meja.
-// Sisi utara meja sengaja tidak dipakai, karena meja menghadang jalan lurus ke sana.
+// Tempat yang bisa dicapai dengan jalan lurus dari pintu depan (agen belum punya pencarian rute): kursi sisi
+// selatan dan samping meja meeting (duduk, lewat pintu masuk ruang meeting yang lebar), lalu titik berdiri di
+// ruang meeting dan di lorong tengah antar kelompok meja. Sisi utara meja sengaja tidak dipakai, karena meja
+// menghadang jalan lurus ke sana.
 const SEATS = [
-  { x: -1.6, z: -5.1 }, { x: 1.6, z: -5.1 }, { x: 0, z: -4.6 }, { x: -3.2, z: -7 }, { x: 3.2, z: -7 },
-  { x: -3.4, z: -5.1 }, { x: 3.4, z: -5.1 }, { x: -1.4, z: 0.2 }, { x: 1.4, z: 0.2 }, { x: 0, z: 1.4 },
+  { key: 'meet1', x: 1.6, z: -7.2, h: Math.PI, via: { x: 1.6, z: -6.7 }, pose: 'sit' },
+  { key: 'meet2', x: -2.6, z: -8.5, h: Math.PI / 2, via: { x: -3.6, z: -8.5 }, pose: 'sit' },
+  { key: 'meet3', x: 2.6, z: -8.5, h: -Math.PI / 2, via: { x: 3.6, z: -8.5 }, pose: 'sit' },
+  { key: 'meet10', x: -1.6, z: -9.8, h: 0, via: { x: -3.4, z: -10.3 }, pose: 'sit' }, { key: 'meet11', x: 1.6, z: -9.8, h: 0, via: { x: 3.4, z: -10.3 }, pose: 'sit' },
+  { key: 'meet4', x: 0, z: -6.2, h: Math.PI }, { key: 'meet5', x: -3.4, z: -6.4, h: Math.PI }, { key: 'meet6', x: 3.4, z: -6.4, h: Math.PI },
+  { key: 'meet7', x: -1.2, z: 2.5, h: Math.PI }, { key: 'meet8', x: 1.2, z: 2.5, h: Math.PI }, { key: 'meet9', x: 0, z: 5, h: Math.PI },
 ]
 // jam simulasi: naik tepat 50 ms tiap tick, apa pun kondisi timer. Klien memakainya (bukan waktu tiba paket)
 // untuk menginterpolasi gerak agent, jadi jitter jaringan dan timer tidak terlihat sebagai gerak patah.
@@ -90,15 +292,9 @@ const pendingAsk = new Map() // tipe subagent → deskripsi dari sesi utama, dip
 const liveAgents = () => [...agents.values()].filter((a) => a.live)
 
 const pubAgent = (a) => ({
-  id: a.id, role: a.role, x: +a.x.toFixed(2), z: +a.z.toFixed(2), heading: +a.heading.toFixed(2), state: a.state, bubble: a.bubble,
+  id: a.id, role: a.role, x: +a.x.toFixed(2), z: +a.z.toFixed(2), heading: +a.heading.toFixed(2), state: a.state, bubble: a.bubble, pose: a.pose,
   ...(a.live && { live: true, look: a.look, label: a.label }),
 })
-
-function freeSeat() {
-  const used = new Set(liveAgents().map((a) => a.seat))
-  const i = SEATS.findIndex((_, k) => !used.has(k))
-  return i >= 0 ? { ...SEATS[i], i } : { x: (Math.random() - 0.5) * 6, z: -3.5 + Math.random() * 2.5, i: -1 }
-}
 
 function liveStart(rawId, type) {
   const id = `live-${rawId}`
@@ -107,13 +303,13 @@ function liveStart(rawId, type) {
   while (queue.length && Date.now() - queue[0].at > 120000) queue.shift()
   const ask = queue.shift()
   const same = liveAgents().filter((a) => a.look === type).length
-  const seat = freeSeat()
-  agents.set(id, {
+  const a = {
     id, role: 'live', live: true, skill: 1, look: type, label: same ? `${type} ${same + 1}` : type,
-    x: DOOR.x, z: DOOR.z, tx: seat.x, tz: seat.z, seat: seat.i, state: 'walking', heading: Math.PI,
-    task: null, bubble: ask?.text || 'Mulai bekerja', restT: 0, lastEvent: Date.now(),
-  })
-  dirty = true
+    x: DOOR.x, z: DOOR.z, tx: DOOR.x, tz: DOOR.z, state: 'walking', heading: Math.PI,
+    task: null, bubble: ask?.text || 'Mulai bekerja', restT: 0, pose: null, spot: null, go: null, lastEvent: Date.now(),
+  }
+  agents.set(id, a)
+  goTo(a, freeSpot(SEATS) ?? { x: (Math.random() - 0.5) * 6, z: -3.5 + Math.random() * 2.5 })
 }
 
 function liveTool(rawId, type, text) {
@@ -136,7 +332,7 @@ function liveStop(id, text = DONE) {
   a.state = 'idle'
   a.tx = a.x
   a.tz = a.z
-  a.via = null
+  a.vias = []
   a.bubble = text
   a.leaveAt = Date.now() + LINGER_MS
   dirty = true
@@ -234,22 +430,7 @@ wss.on('connection', (ws) => {
       const text = String(m.text ?? '').slice(0, 120)
       if (text.trim()) {
         sayChat({ name: p?.name ?? '??', text, agent: null })
-        // jawaban canned dari agent terdekat
-        const nearest = [...agents.values()].filter((a) => !a.live).sort(
-          (a, b) => Math.hypot(a.x - (p?.x ?? 0), a.z - (p?.z ?? 0)) - Math.hypot(b.x - (p?.x ?? 0), b.z - (p?.z ?? 0))
-        )[0]
-        setTimeout(() => {
-          if (nearest && nearest.state === 'idle') {
-            const replies = [
-              'siap! ada yang bisa dibantu?',
-              'oh iya? nanti ku kerjain',
-              'hmm, catat dulu ya di task',
-              'yes boss',
-              'sabar, masih backlog nih',
-            ]
-            sayChat({ name: nearest.id, text: replies[Math.floor(Math.random() * replies.length)], agent: nearest.id })
-          }
-        }, 900)
+        // agent tidak membalas chat global; hanya DM langsung ke agent yang dijawab (di bawah)
       }
     } else if (m.type === 'dm-agent') {
       // DM ke agent tertentu → canned reply dengan bubble pada agent
@@ -264,7 +445,8 @@ wss.on('connection', (ws) => {
         }
         const reply = (replies[a.role] ?? ['noted'])[Math.floor(Math.random() * 3)]
         a.bubble = reply
-        a.restT = 3
+        a.restT = Math.max(a.restT, 3)
+        dirty = true
         sayChat({ name: a.id, text: reply, agent: a.id })
       }
     }
@@ -291,13 +473,13 @@ function dispatchReview() {
     if (t.mode !== 'sim') continue // task Claude menunggu keputusan pemilik komputer, bukan review lead simulasi
     const lead = [...agents.values()].find((a) => a.state === 'idle' && a.role === 'lead')
     if (!lead) break // lead sibuk → nunggu
-    // lead berjalan ke ruang meeting untuk review
+    // lead berjalan ke kursinya di ruang meeting untuk review
     updateTask(t.id, { status: 'in_progress', agent_id: lead.id, progress: 0, est: 3 })
     lead.task = t.id
     lead.state = 'walking'
+    lead.idleWalk = false
     lead.bubble = `Review: ${t.title}`
-    lead.tx = 0 // ruang meeting
-    lead.tz = -5.2
+    goTo(lead, MEET_LEAD)
     broadcast({ type: 'task-update' })
   }
 }
@@ -306,9 +488,9 @@ function assign(agent, task) {
   updateTask(task.id, { status: 'in_progress', agent_id: agent.id })
   agent.task = task.id
   agent.state = 'walking'
+  agent.idleWalk = false
   agent.bubble = `Mengerjakan: ${task.title}`
-  agent.tx = DESKS[agent.id].x
-  agent.tz = DESKS[agent.id].z
+  goTo(agent, agent.desk)
   broadcast({ type: 'task-update' })
 }
 
@@ -371,8 +553,7 @@ setInterval(() => {
       if (!a.done && now - a.lastEvent > LIVE_STALE_MS) liveStop(a.id)
       if (a.done && !a.leaving && now > a.leaveAt) {
         a.leaving = true
-        a.tx = DOOR.x
-        a.tz = DOOR.z
+        goTo(a, DOOR)
         a.state = 'walking'
         a.idleWalk = true // supaya tiba di pintu tidak diubah jadi "working"
         a.bubble = null
@@ -385,34 +566,41 @@ setInterval(() => {
       }
     }
 
-    // Macet: agent berjalan lurus ke target dan bisa tertahan tegak lurus di tepi kotak meja (misalnya
-    // tepat di utara meja yang dituju di seberang). Tiap 1,5 detik, bila nyaris tidak bergerak, ia
-    // berbelok lewat lorong tengah (x = 0); bila tetap gagal setelah 10 detik, langsung dipindah ke target.
-    // shortcut: bukan pencarian rute sungguhan, cukup untuk denah ini; ganti dengan A* bila denah berubah
+    // Macet: agent berjalan lurus ke target dan bisa tertahan tegak lurus di tepi kotak meja atau dinding. Tiap
+    // 1,5 detik, bila nyaris tidak bergerak, ia memilih titik koridor (WAYPOINTS) yang terlihat; bila tetap gagal
+    // setelah 30 detik berjalan, langsung dipindah ke target.
+    // shortcut: titik koridor tetap, bukan pencarian rute sungguhan; ganti dengan A* bila denah berubah banyak
     if (a.state === 'walking') {
       a.walkT = (a.walkT ?? 0) + dt
       a.sampT = (a.sampT ?? 0) + dt
       if (a.sampT >= 1.5) {
         if (a.sx !== undefined && Math.hypot(a.x - a.sx, a.z - a.sz) < 0.15 && Math.hypot(a.tx - a.x, a.tz - a.z) > ARRIVE) {
-          a.via = a.via ? null : { x: 0, z: a.z }
+          // tertahan di tepi kelompok meja atau dinding: pilih titik koridor yang terlihat dari sini. Tanpa titik
+          // yang terlihat, titik singgah dilepas dan agent mencoba lurus lagi (menyusur tepi bisa membebaskannya)
+          a.vias = route(a, { x: a.tx, z: a.tz })
         }
         a.sx = a.x
         a.sz = a.z
         a.sampT = 0
       }
-      if (a.walkT > 10) { a.x = a.tx; a.z = a.tz; a.via = null; a.walkT = 0; posChanged = true }
+      if (a.walkT > 30) { a.x = a.tx; a.z = a.tz; a.vias = []; a.walkT = 0; posChanged = true }
     } else {
       a.walkT = 0
       a.sampT = 0
       a.sx = undefined
-      a.via = null
+      a.vias = []
     }
 
-    // bergerak ke target (atau titik belok) dgn collision sederhana
-    const dx = (a.via ? a.via.x : a.tx) - a.x
-    const dz = (a.via ? a.via.z : a.tz) - a.z
+    // bergerak ke target (atau titik singgah pertama) dgn collision sederhana
+    const via = a.vias?.[0]
+    const dx = (via ? via.x : a.tx) - a.x
+    const dz = (via ? via.z : a.tz) - a.z
     const dist = Math.hypot(dx, dz)
-    if (a.via && dist <= ARRIVE) a.via = null
+    if (via && dist <= ARRIVE) {
+      a.vias.shift()
+      // titik singgah terakhir dicapai tetapi tujuan masih terhalang: sisipkan titik koridor berikutnya
+      if (!a.vias.length) a.vias = route(a, { x: a.tx, z: a.tz })
+    }
     if (dist > ARRIVE) {
       const step = Math.min(SPEED * dt, dist)
       const obj = { x: a.x + (dx / dist) * step, z: a.z + (dz / dist) * step }
@@ -424,13 +612,15 @@ setInterval(() => {
       posChanged = true
       // jalan santai yang selesai ditangani blok idle di bawah; kalau diubah jadi working di sini,
       // agent tanpa task tidak pernah kembali idle dan tidak pernah dipilih dispatcher
-      if (Math.hypot(a.tx - a.x, a.tz - a.z) <= ARRIVE && a.state === 'walking' && !a.idleWalk) a.state = 'working'
+      if (Math.hypot(a.tx - a.x, a.tz - a.z) <= ARRIVE && a.state === 'walking' && !a.idleWalk) { a.state = 'working'; settle(a) }
     } else if (a.state === 'walking' && !a.idleWalk && Math.hypot(a.tx - a.x, a.tz - a.z) <= ARRIVE) {
       // sudah di target (mis. spawn tepat di meja) → langsung kerja
       a.state = 'working'
+      settle(a)
     }
 
     // kerja: pipeline tahap baca → kerja → cek → selesai
+    if (a.state === 'working' && !a.live) a.fatigue += dt
     if (a.state === 'working' && a.task != null) {
       const t = db.prepare('SELECT * FROM tasks WHERE id=?').get(a.task)
       if (!t) { a.task = null; a.state = 'idle'; continue }
@@ -474,25 +664,30 @@ setInterval(() => {
       }
     }
 
-    // idle behavior: setelah selesai/punya waktu luang, jalan-jalan sesekali
+    // idle behavior: capek sehabis kerja → ke toilet; selain itu istirahat di sofa, main game, ngopi, makan, atau
+    // jalan-jalan. Agent tidak ngomong sendiri: bubble hanya untuk kerja dan aktivitas ini (satu bubble saat berangkat).
     if (a.state === 'idle' && !a.live) {
       if (a.restT > 0) {
         a.restT -= dt
-        if (a.restT <= 0) a.bubble = null
+        if (a.restT <= 0) { a.bubble = null; dirty = true }
       } else {
         a.restT = 6 + Math.random() * 10
-        if (Math.random() < 0.5) {
-          // jalan ke spot hangout
-          const h = HANGOUTS[Math.floor(Math.random() * HANGOUTS.length)]
-          a.tx = h.x + (Math.random() - 0.5) * 2
-          a.tz = h.z + (Math.random() - 0.5) * 2
+        const r = Math.random()
+        let pick = r * 100
+        let act = a.fatigue > a.fatigueMax ? 'toilet' : null
+        if (!act) for (const [name, w] of ACT_WEIGHT) { if ((pick -= w) < 0) { act = name; break } }
+        const spot = act && freeSpot(SPOTS[act])
+        if (spot) {
+          goTo(a, spot, act)
           a.state = 'walking'
           a.idleWalk = true
-        } else {
-          // ngomong sendiri
-          const chat = ['ngopi dulu', 'push & pray', 'baca docs dulu', 'review pr temen', 'enta task lagi...']
-          a.bubble = chat[Math.floor(Math.random() * chat.length)]
-          a.restT = 2 + Math.random() * 2
+          a.bubble = ACT_BUBBLE[act]
+        } else if (r < 0.95) {
+          // jalan ke spot hangout
+          const h = HANGOUTS[Math.floor(Math.random() * HANGOUTS.length)]
+          goTo(a, { x: h.x + (Math.random() - 0.5) * 2, z: h.z + (Math.random() - 0.5) * 2 })
+          a.state = 'walking'
+          a.idleWalk = true
         }
       }
     }
@@ -502,6 +697,7 @@ setInterval(() => {
       a.state = 'idle'
       a.bubble = null
       a.restT = 3 + Math.random() * 5
+      settle(a)
     }
   }
 

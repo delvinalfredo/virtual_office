@@ -157,7 +157,8 @@ const BLINK = 0.14
 
 // Karakter chibi. Gerak dihitung dari jarak yang benar-benar ditempuh grup induknya, jadi langkah
 // selalu pas dengan kecepatan dan berhenti perlahan, di mana pun komponen ini dipasang.
-function Humanoid({ id = 'kamu', label, working = false, heightScale = 1, motion = null }) {
+// working: lengan mengetik (juga dipakai saat main arcade); sitting: paha ke depan, duduk di kursi.
+function Humanoid({ id = 'kamu', label, working = false, sitting = false, heightScale = 1, motion = null }) {
   const look = lookFor(id)
   const root = useRef()
   const body = useRef()
@@ -168,7 +169,7 @@ function Humanoid({ id = 'kamu', label, working = false, heightScale = 1, motion
   const armR = useRef()
   const eyeL = useRef()
   const eyeR = useRef()
-  const s = useRef({ amp: 0, work: 0, phase: 0, has: false, px: 0, pz: 0, blinkAt: 0, off: 0 })
+  const s = useRef({ amp: 0, work: 0, sit: 0, phase: 0, has: false, px: 0, pz: 0, blinkAt: 0, off: 0 })
   const wp = useRef(new THREE.Vector3())
 
   useFrame((state, rawDt) => {
@@ -186,7 +187,7 @@ function Humanoid({ id = 'kamu', label, working = false, heightScale = 1, motion
     let dist = Math.hypot(wp.current.x - m.px, wp.current.z - m.pz)
     m.px = wp.current.x
     m.pz = wp.current.z
-    // lonjakan (teleport lewat minimap) bukan berjalan
+    // lonjakan (sambungan ulang, agent disnap ke kursi) bukan berjalan
     let speed = dt > 0 && dist / dt < 14 ? dist / dt : 0
     // pemakai yang tahu kecepatan sebenarnya (pemain lain, dari interpolasi) menyebutkannya langsung, supaya
     // langkah kaki tidak bergantung pada selisih posisi antar frame yang ikut goyang saat paket telat
@@ -195,13 +196,16 @@ function Humanoid({ id = 'kamu', label, working = false, heightScale = 1, motion
     m.amp = damp(m.amp, moving ? Math.min(1, speed / 3) : 0, moving ? 10 : 8, dt)
     if (moving) m.phase += dist * 4.2
     m.work = damp(m.work, working ? 1 : 0, 8, dt)
+    m.sit = damp(m.sit, sitting ? 1 : 0, 8, dt)
 
     const t = state.clock.elapsedTime + m.off
     const sw = Math.sin(m.phase) * m.amp
     const idle = 1 - m.amp
 
-    legL.current.rotation.x = sw * 0.9
-    legR.current.rotation.x = -sw * 0.9
+    // duduk: kedua paha diangkat ke depan, langkah kaki dimatikan
+    const walk = 1 - m.sit
+    legL.current.rotation.x = sw * 0.9 * walk - 1.25 * m.sit
+    legR.current.rotation.x = -sw * 0.9 * walk - 1.25 * m.sit
     const type = Math.sin(t * 14) * 0.07
     const swing = 0.8 * sw
     const rest = Math.sin(t * 2) * 0.04 * idle
