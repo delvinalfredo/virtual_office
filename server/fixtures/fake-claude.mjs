@@ -52,9 +52,11 @@ out({ type: 'assistant', session_id: sid, message: { content: [{ type: 'tool_use
 out({ type: 'user', session_id: sid, message: { content: [{ type: 'tool_result', content: 'ISI-RAHASIA-FILE' }] } })
 out({ type: 'assistant', session_id: sid, message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'curl -H "Authorization: Bearer RAHASIA" x' } }] } })
 out({ type: 'assistant', session_id: sid, message: { content: [{ type: 'text', text: 'Hasil: ' + prompt }] } })
+out({ type: 'rate_limit_event', session_id: sid, rate_limit_info: { status: 'allowed', unifiedWindows: { five_hour: { utilization: 0.25, resetsAt: 1900000000, status: 'allowed' }, seven_day: { utilization: 0.5, resetsAt: 1900100000, status: 'allowed' } } } })
 out({
   type: 'result', subtype: 'success', is_error: false, session_id: sid, num_turns: 2, duration_ms: 1234,
   result: `Hasil: ${prompt} | cwd=${process.cwd()} | args=${JSON.stringify(argv.slice(2))}`,
   permission_denials: prompt.includes('tolak') ? [{ tool_name: 'Bash' }] : [],
   total_cost_usd: 0.25,
+  usage: { input_tokens: 10, cache_creation_input_tokens: 200, cache_read_input_tokens: 5000, output_tokens: 40 },
 })

@@ -1,6 +1,6 @@
-// Mengirim event tiruan ke server kantor supaya kamu bisa melihat tamu agen tanpa Claude Code.
+// Mengirim event tiruan ke server kantor supaya kamu bisa melihat anggota tim mewakili subagent tanpa Claude Code.
 //   node scripts/demo-agen.mjs          (port 3000; node scripts/demo-agen.mjs 3100 untuk port lain)
-// Tiga agen masuk, bekerja beberapa detik dengan tool berbeda, lalu selesai dan pulang.
+// Tiga anggota tim mewakili tiga agen, bekerja beberapa detik dengan tool berbeda, lalu selesai.
 const port = Number(process.argv[2]) || 3000
 const send = (b) =>
   fetch(`http://127.0.0.1:${port}/api/events`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b) })
@@ -17,7 +17,7 @@ try {
   console.error(`Server kantor tidak menjawab di port ${port}. Jalankan dulu: npm start`)
   process.exit(1)
 }
-console.log('Tiga agen masuk. Lihat di browser kantor. Mereka berjalan ke ruang meeting dulu, sekitar 6 detik.')
+console.log('Tiga agen mulai. Lihat di browser kantor: tiga anggota tim berjalan ke mejanya dan aktivitasnya tertulis di bagian Tim.')
 await sleep(7000)
 for (let i = 0; i < 3; i++) {
   for (const [id, type, tools] of crew) {
@@ -27,4 +27,4 @@ for (let i = 0; i < 3; i++) {
   await sleep(2500)
 }
 for (const [id, type] of crew) await send({ hook_event_name: 'SubagentStop', agent_id: id, agent_type: type })
-console.log('Selesai. Mereka berkonfeti lalu pulang.')
+console.log('Selesai. Mereka berkonfeti.')

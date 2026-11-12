@@ -5,7 +5,7 @@ import { noteServerTime, push, resetInterp } from './interp'
 // Posisi tidak lagi disimpan di state React. Tiap paket masuk ke penyimpan interpolasi (src/interp.js) dan
 // dibaca per frame oleh karakternya. State React hanya berubah bila hal yang tampak berbeda (status, bubble,
 // siapa yang ada), jadi aplikasi tidak dirender ulang 20 kali per detik.
-const agentSig = (list) => list.map((a) => `${a.id}|${a.state}|${a.pose ?? ''}|${a.bubble ?? ''}|${a.label ?? ''}|${a.live ? 1 : 0}`).join('\n')
+const agentSig = (list) => list.map((a) => `${a.id}|${a.state}|${a.pose ?? ''}|${a.bubble ?? ''}`).join('\n')
 const peerSig = (list) => list.map((p) => `${p.name}|${p.pose ?? ''}|${p.h ?? ''}`).join('\n')
 const EVENT_MAX = 40 // sama dengan ring buffer eventLog di server
 // Server lama belum mengirim cap waktu: pakai waktu tiba paket sebagai gantinya, supaya karakter tidak membeku.

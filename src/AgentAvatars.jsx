@@ -2,25 +2,21 @@ import { useRef, useState, useMemo } from 'react'
 import { useFrame } from '@react-three/fiber'
 import Humanoid from './Humanoid'
 import Burst from './Burst'
-import { ChatBubble } from './ChatBubble'
 import { dampAngle } from './motion'
 import { sample } from './interp'
 
-// Teks bubble yang berarti "pekerjaan selesai": 'Disetujui' dari lead simulasi, 'Selesai' dari agen
-// nyata (hook Claude Code). Harus sama dengan APPROVED dan DONE di server/index.js.
+// Teks bubble yang berarti "pekerjaan selesai": 'Disetujui' dari lead simulasi, 'Selesai' dari anggota tim yang
+// mewakili sesi Claude Code. Harus sama dengan APPROVED dan DONE di server/index.js.
 const DONE_BUBBLES = ['Disetujui', 'Selesai']
 
-// avatar agent: Humanoid + posisi dari server (dihaluskan). Agen simulasi bisa diklik untuk DM;
-// agen nyata (live) tidak bisa, dan tampilannya mengikuti tipe subagent, bukan id-nya.
+// avatar agent tim: Humanoid + posisi dari server (dihaluskan), bisa diklik untuk DM. Tanpa bubble di kepala:
+// aktivitasnya tertulis di bagian Tim, dan teks bubble dari server hanya dibaca untuk memicu konfeti.
 // pose dari server: 'sit' duduk (meja, meeting, sofa, toilet, makan), 'game' duduk main konsol, 'play' berdiri main
 // (arcade, pingpong).
-function AgentAvatar({ id, look, label, fallback, state, bubble, pose, onClick }) {
+function AgentAvatar({ id, fallback, state, bubble, pose, onClick }) {
   const group = useRef()
-  const live = look !== undefined
   // posisi awal sekali saja (dari interpolasi bila sudah ada); sesudahnya digerakkan per frame di bawah
   const [start] = useState(() => { const p = sample('agent', id); return [p?.x ?? fallback.x, 0, p?.z ?? fallback.z] })
-  // tinggi bubble tetap per agen (dari id), tiga tingkat
-  const lift = live ? [...id].reduce((n, ch) => n + ch.charCodeAt(0), 0) % 3 * 0.55 : 0
   // task selesai: konfeti di tempat agent berdiri.
   // Pola "bandingkan dengan nilai sebelumnya saat render" dipakai supaya tidak perlu efek.
   const [prevBubble, setPrevBubble] = useState(bubble)
@@ -44,12 +40,11 @@ function AgentAvatar({ id, look, label, fallback, state, bubble, pose, onClick }
     <group
       ref={group}
       position={start}
-      onClick={live ? undefined : (e) => { e.stopPropagation(); onClick?.(id) }}
-      onPointerOver={live ? undefined : () => { document.body.style.cursor = 'pointer' }}
-      onPointerOut={live ? undefined : () => { document.body.style.cursor = 'auto' }}
+      onClick={(e) => { e.stopPropagation(); onClick?.(id) }}
+      onPointerOver={() => { document.body.style.cursor = 'pointer' }}
+      onPointerOut={() => { document.body.style.cursor = 'auto' }}
     >
-      <Humanoid id={look ?? id} label={label} working={state === 'working' || pose === 'play' || pose === 'game'} sitting={pose === 'sit' || pose === 'game'} />
-      {bubble && <ChatBubble text={bubble} lift={lift} />}
+      <Humanoid id={id} working={state === 'working' || pose === 'play' || pose === 'game'} sitting={pose === 'sit' || pose === 'game'} />
       {burstKey > 0 && <Burst key={burstKey} />}
     </group>
   )
@@ -73,18 +68,6 @@ export default function AgentAvatars({ agents, agentsStatic, onAgentClick }) {
           />
         )
       })}
-      {agents.filter((a) => a.live).map((a) => (
-        <AgentAvatar
-          key={a.id}
-          id={a.id}
-          look={a.look}
-          label={a.label}
-          fallback={{ x: a.x, z: a.z }}
-          state={a.state}
-          bubble={a.bubble}
-          pose={a.pose}
-        />
-      ))}
     </group>
   )
 }

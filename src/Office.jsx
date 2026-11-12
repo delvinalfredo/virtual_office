@@ -2,6 +2,7 @@ import { useRef, useLayoutEffect, memo } from 'react'
 import * as THREE from 'three'
 import { Box, Ink } from './props'
 import { Merged } from './merge'
+import Doors from './Doors'
 import { toonGradient } from './toon'
 import { CLUSTER_X, SPINES, CHAIR_DZ } from './office-plan'
 
@@ -302,14 +303,10 @@ function MeetingRoom() {
       <Box size={[3.8, 2.6, 0.2]} pos={[-3.1, 1.3, -5]} color="#fcfcf7" />
       <Box size={[3.8, 2.6, 0.2]} pos={[3.1, 1.3, -5]} color="#fcfcf7" />
       <Box size={[2.4, 0.5, 0.2]} pos={[0, 2.35, -5]} color="#fcfcf7" />
-      {/* bingkai pintu kayu, dua daun terbuka ke dalam (tegak lurus dinding, di kiri dan kanan jalan masuk) */}
+      {/* bingkai pintu kayu; daun pintunya ada di Doors.jsx (menutup, membuka bila ada yang mendekat) */}
       <Box size={[0.12, 2.1, 0.28]} pos={[-1.26, 1.05, -5]} color={DOOR_WOOD} />
       <Box size={[0.12, 2.1, 0.28]} pos={[1.26, 1.05, -5]} color={DOOR_WOOD} />
       <Box size={[2.64, 0.12, 0.28]} pos={[0, 2.1, -5]} color={DOOR_WOOD} />
-      <Box size={[0.06, 2.0, 1.2]} pos={[-1.14, 1.0, -5.7]} color="#b98558" />
-      <Box size={[0.06, 2.0, 1.2]} pos={[1.14, 1.0, -5.7]} color="#b98558" />
-      <Box size={[0.1, 0.1, 0.1]} pos={[-1.08, 1.0, -6.2]} color="#ffd23f" />
-      <Box size={[0.1, 0.1, 0.1]} pos={[1.08, 1.0, -6.2]} color="#ffd23f" />
       <Box size={[1.6, 0.3, 0.06]} pos={[0, 2.38, -4.88]} color="#3a86ff" />
       <Box size={[0.1, 1.0, 1.9]} pos={[4.85, 1.7, -8.5]} color="#1c2233" />
       <Box size={[0.05, 0.84, 1.74]} pos={[4.8, 1.7, -8.5]} color="#2b3452" />
@@ -422,13 +419,10 @@ function ToiletRoom() {
       <Box size={[0.2, 2.6, 4.4]} pos={[-6.5, 1.3, -9.8]} color={TOILET_WALL} />
       <Box size={[2, 2.6, 0.2]} pos={[-11, 1.3, -7.6]} color={TOILET_WALL} />
       <Box size={[1.5, 2.6, 0.2]} pos={[-7.25, 1.3, -7.6]} color={TOILET_WALL} />
-      {/* pintu terbuka: bingkai kayu, daun pintu berengsel di sisi barat dan terbuka ke dalam (tegak lurus dinding,
-          di luar jalur agent yang lewat di tengah celah) */}
+      {/* bingkai pintu kayu; daun pintunya ada di Doors.jsx */}
       <Box size={[0.12, 2.1, 0.26]} pos={[-10.06, 1.05, -7.6]} color={DOOR_WOOD} />
       <Box size={[0.12, 2.1, 0.26]} pos={[-7.94, 1.05, -7.6]} color={DOOR_WOOD} />
       <Box size={[2.18, 0.12, 0.26]} pos={[-9, 2.16, -7.6]} color={DOOR_WOOD} />
-      <Box size={[0.06, 2.0, 0.9]} pos={[-9.9, 1.0, -8.1]} color={DOOR_WOOD} />
-      <Box size={[0.1, 0.1, 0.1]} pos={[-9.82, 1.0, -8.45]} color="#ffd23f" />
       {/* ambang pintu dan papan tanda biru */}
       <Box size={[2.2, 0.44, 0.2]} pos={[-9, 2.38, -7.6]} color={TOILET_WALL} />
       <Box size={[0.7, 0.4, 0.06]} pos={[-9, 2.35, -7.46]} color="#3a86ff" />
@@ -461,6 +455,7 @@ function Bookshelf({ x, z, rot = 0 }) {
 // semua benda diam digabung per jenis bahan oleh <Merged>, jadi seluruh kantor hanya beberapa draw call
 function Office() {
   return (
+    <>
     <Merged>
       <WoodFloor />
 
@@ -515,7 +510,7 @@ function Office() {
       <Box size={[0.2, 2.6, 2 * WALL]} pos={[-WALL, 1.3, 0]} color="#fcfcf7" />
       <Box size={[0.2, 2.6, 2 * WALL]} pos={[WALL, 1.3, 0]} color="#fcfcf7" />
       {/* dinding depan: tembok tipis putih dengan pintu keluar di tengah. Pintunya tertutup; pemain memang
-          tidak bisa keluar (clampToRoom), jadi pintu hanya penanda tempat tamu masuk. */}
+          tidak bisa keluar (clampToRoom), jadi pintu hanya hiasan. */}
       <Box size={[WALL - 1.4, 2.6, 0.2]} pos={[-(WALL + 1.4) / 2, 1.3, WALL]} color="#fcfcf7" />
       <Box size={[WALL - 1.4, 2.6, 0.2]} pos={[(WALL + 1.4) / 2, 1.3, WALL]} color="#fcfcf7" />
       <Box size={[2.8, 0.4, 0.2]} pos={[0, 2.4, WALL]} color="#fcfcf7" />
@@ -573,6 +568,8 @@ function Office() {
       <Dining />
       <Pingpong x={9.3} z={9.5} />
     </Merged>
+    <Doors />
+    </>
   )
 }
 

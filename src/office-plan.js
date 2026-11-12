@@ -46,7 +46,7 @@ export const OBSTACLES = [
   ...CLUSTERS,
   ...DESK_CHAIRS,
   // ruang meeting (x -5 sampai 5, z -12 sampai -5): dinding barat, timur, dinding depan dengan pintu 2,4 m di tengah
-  // (x -1,2 sampai 1,2), dua daun pintu yang terbuka ke dalam, lalu meja meeting 4 x 2
+  // (x -1,2 sampai 1,2), dua daun pintu (kotaknya selalu di posisi terbuka; daun digambar di Doors.jsx), lalu meja meeting 4 x 2
   [-5, -8.5, 0.1, 3.5],
   [5, -8.5, 0.1, 3.5],
   [-3.1, -5, 1.9, 0.1],
@@ -69,7 +69,8 @@ export const OBSTACLES = [
   [-6.5, -9.8, 0.1, 2.2],
   [-11, -7.6, 1, 0.1],
   [-7.25, -7.6, 0.75, 0.1],
-  [-9.9, -8.1, 0.06, 0.45], // daun pintu yang terbuka
+  [-9.9, -8.1, 0.06, 0.45], // dua daun pintu (posisi terbuka)
+  [-8.1, -8.1, 0.06, 0.45],
   [-9.2, -10.9, 0.06, 1.1],
   [-10.6, -11.2, 0.3, 0.35],
   [-7.8, -11.2, 0.3, 0.35],
@@ -142,13 +143,11 @@ export const SPOTS = {
   ],
 }
 
-// kursi lead saat review; kursi tamu agen nyata ada di SEATS
+// kursi lead saat review; kursi lain di ruang meeting ada di SEATS
 export const MEET_LEAD = { key: 'meet0', x: -1.6, z: -7.2, h: Math.PI, via: { x: -1.6, z: -6.7 }, pose: 'sit' }
 
-// Tempat yang bisa dicapai dengan jalan lurus dari pintu depan (agen belum punya pencarian rute): kursi sisi
-// selatan dan samping meja meeting (duduk, lewat pintu masuk ruang meeting yang lebar), lalu titik berdiri di
-// ruang meeting dan di lorong tengah antar kelompok meja. Sisi utara meja sengaja tidak dipakai, karena meja
-// menghadang jalan lurus ke sana.
+// Kursi dan titik berdiri di ruang meeting (kursi sekeliling meja, titik berdiri di sekitarnya), ditambah titik
+// berdiri di lorong tengah antar kelompok meja. MEETING (di bawah) memakai yang ada di dalam ruang meeting.
 export const SEATS = [
   { key: 'meet1', x: 1.6, z: -7.2, h: Math.PI, via: { x: 1.6, z: -6.7 }, pose: 'sit' },
   { key: 'meet2', x: -2.6, z: -8.5, h: Math.PI / 2, via: { x: -3.6, z: -8.5 }, pose: 'sit' },
@@ -156,7 +155,11 @@ export const SEATS = [
   { key: 'meet10', x: -1.6, z: -9.8, h: 0, via: { x: -3.4, z: -10.3 }, pose: 'sit' }, { key: 'meet11', x: 1.6, z: -9.8, h: 0, via: { x: 3.4, z: -10.3 }, pose: 'sit' },
   { key: 'meet4', x: 0, z: -6.2, h: Math.PI }, { key: 'meet5', x: -3.4, z: -6.4, h: Math.PI }, { key: 'meet6', x: 3.4, z: -6.4, h: Math.PI },
   { key: 'meet7', x: -1.2, z: 2.5, h: Math.PI }, { key: 'meet8', x: 1.2, z: 2.5, h: Math.PI }, { key: 'meet9', x: 0, z: 5, h: Math.PI },
+  // berdiri di sisi barat dan timur meja, menghadap meja (tambahan supaya rapat muat 11 agent)
+  { key: 'meet12', x: -3.9, z: -9.4, h: Math.PI / 2 }, { key: 'meet13', x: 3.9, z: -9.4, h: -Math.PI / 2 },
 ]
+// tempat rapat: semua yang ada di dalam ruang meeting, kursi lead paling depan supaya lead kebagian kursinya
+export const MEETING = [MEET_LEAD, ...SEATS.filter((s) => s.z < -5)]
 // kursi kerja yang kosong juga bisa diduduki pemain; arah hadap dari sisi sekat tempatnya
 const chairSpots = DESK_CHAIRS.map(([x, z]) => {
   const s = SPINES.reduce((a, b) => (Math.abs(b - z) < Math.abs(a - z) ? b : a))

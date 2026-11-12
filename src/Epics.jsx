@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Sec } from './Sec'
+import { tok } from './fmt'
 
 const usd = (n) => `$${(n ?? 0).toFixed(2)}`
 const STAGE = {
@@ -72,7 +73,7 @@ export function Epics({ control, reloadKey, onOpen, onPending, hidden = false })
           <div key={e.id} className="tcard claude">
             <div className="body">
               <div className="title">{e.title}</div>
-              <div className="who">{projects.find((p) => p.id === e.project_id)?.name ?? e.project_id}, {usd(e.cost)} dari {usd(e.budget)}</div>
+              <div className="who">{projects.find((p) => p.id === e.project_id)?.name ?? e.project_id}, {tok(e.tokens)} token, batas {usd(e.budget)}</div>
               <div className="tnote">{STAGE[e.status] ?? e.status}{e.tasks.length ? `, ${done} dari ${e.tasks.length} task selesai` : ''}</div>
               {e.note && e.status !== 'running' && <div className="tlive">{e.note}</div>}
               {e.status === 'failed' && e.detail && <div className="tnote bad">{e.detail}</div>}

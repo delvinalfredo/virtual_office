@@ -1,13 +1,15 @@
 import { useState } from 'react'
 import { Team } from './Team'
+import { Sec } from './Sec'
+import { tok } from './fmt'
 
 const STATE_LABEL = { running: 'Berjalan', stopping: 'Menghentikan', done: 'Selesai', error: 'Gagal', stopped: 'Dihentikan' }
 
-// Panel sesi Claude Code: kelola proyek, tulis tugas, lihat dan hentikan sesi yang berjalan.
-// Data dan token datang dari useControl; di luar komputer yang menjalankan server panel ini tidak tampil.
+// Bagian "Sesi Claude" di panel kiri: kelola proyek, tulis tugas, lihat dan hentikan sesi yang berjalan. Sesinya
+// dikerjakan anggota tim di kantor. Data dan token datang dari useControl; di luar komputer yang menjalankan server
+// bagian ini tidak tampil.
 export function Sessions({ control }) {
   const { on, call, projects, setProjects, sessions: list, error, setError, reload } = control
-  const [open, setOpen] = useState(false)
   const [projectId, setProjectId] = useState('')
   const [pname, setPname] = useState('')
   const [ppath, setPpath] = useState('')
@@ -108,13 +110,8 @@ export function Sessions({ control }) {
   const running = (list ?? []).filter((s) => s.state === 'running' || s.state === 'stopping').length
 
   return (
-    <>
-      <button className="btn sm sessbtn" aria-pressed={open} onClick={() => setOpen((v) => !v)}>
-        {open ? 'Tutup sesi' : `Sesi Claude${running ? ` (${running})` : ''}`}
-      </button>
-      {open && (
-        <section className="sessions panel" aria-label="Sesi Claude Code">
-          <h2>Sesi Claude Code</h2>
+    // keep: ketikan di form tidak hilang saat bagian dilipat
+    <Sec id="sesi" label="Sesi Claude Code" title="Sesi Claude" count={running || null} defaultOpen={false} keep>
           <details className="pmanage" open={projects.length === 0}>
             <summary>Kelola proyek</summary>
             {projects.length === 0 ? (
@@ -240,7 +237,7 @@ export function Sessions({ control }) {
           {list?.length === 0 && <p className="empty">Belum ada sesi.</p>}
           <ul className="slist">
             {list?.map((s) => (
-              <li key={s.id} className="sess panel">
+              <li key={s.id} className="sess">
                 <div className="shead">
                   <b>{s.project}</b>
                   <span className={`chip ${s.state}`}>{STATE_LABEL[s.state] ?? s.state}</span>
@@ -283,13 +280,13 @@ export function Sessions({ control }) {
               {hist?.map((h) => {
                 const types = [...new Set(JSON.parse(h.subagents || '[]'))]
                 return (
-                  <li key={h.id} className="sess panel">
+                  <li key={h.id} className="sess">
                     <div className="shead">
                       <b>{h.project}</b>
                       <span className={`chip ${h.state}`}>{STATE_LABEL[h.state] ?? h.state}</span>
                     </div>
                     <div className="sact">
-                      {new Date(h.ended_at).toLocaleString()}, {h.tools} tool{h.cost > 0 ? `, $${h.cost.toFixed(2)}` : ''}
+                      {new Date(h.ended_at).toLocaleString()}, {h.tools} tool{h.tokens > 0 ? `, ${tok(h.tokens)} token` : ''}
                       {types.length ? `, subagent: ${types.join(', ')}` : ''}
                     </div>
                     {(h.result || h.error) && (
@@ -303,8 +300,6 @@ export function Sessions({ control }) {
               })}
             </ul>
           </details>
-        </section>
-      )}
-    </>
+    </Sec>
   )
 }

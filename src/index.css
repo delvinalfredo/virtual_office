@@ -155,10 +155,19 @@ button { cursor: pointer; }
 .empty { margin: 0; font-size: 12px; color: var(--muted); text-align: center; padding: var(--s2) 0; }
 
 /* angka ringkas: dua kolom, angka besar di atas keterangannya */
-.tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--s1); }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(0, 1fr)); gap: var(--s1); }
 .tile { border: 2px solid var(--ink); border-radius: 8px; padding: var(--s1) var(--s2); min-width: 0; }
 .tile b { display: block; font-size: 18px; font-weight: 900; line-height: 1.1; overflow-wrap: anywhere; }
-.tile span { font-size: 11px; font-weight: 700; color: var(--muted); }
+.tile span { display: block; margin-top: 2px; font-size: 11px; font-weight: 700; line-height: 1.25; color: var(--muted); }
+
+/* usage Claude: label di kiri, angka di kanan, batang pemakaian di bawah tiap jatah */
+.urow { display: flex; justify-content: space-between; align-items: baseline; gap: var(--s2); font-size: 12px; padding: 2px 0; }
+.urow span { min-width: 0; font-weight: 700; }
+.urow small { display: block; font-size: 11px; color: var(--muted); }
+.urow b { flex: none; font-weight: 900; }
+.ugauge { margin-bottom: var(--s1); }
+.ugauge .bar { margin: 2px 0 var(--s1); }
+.ubtn { width: 100%; }
 
 /* tim: kotak warna sama dengan pil nama karakter di 3D, jadi gampang dicari di kantor */
 .trow { display: flex; align-items: center; gap: var(--s2); padding: var(--s1) 0; border-top: 1px solid var(--col-todo); }
@@ -230,7 +239,14 @@ button { cursor: pointer; }
 .dialog .patch { max-height: 36vh; overflow: auto; white-space: pre; font-size: 11px; }
 .patch .add { background: var(--col-done); }
 .patch .del { color: var(--danger); }
-.dialog pre { background: var(--col-todo); border: 2px solid var(--ink); border-radius: 8px; padding: var(--s3); font: 12px/1.45 ui-monospace, Consolas, monospace; white-space: pre-wrap; margin: 0 0 var(--s3); }
+.dialog pre { background: var(--col-todo); border: 2px solid var(--ink); border-radius: 8px; padding: var(--s3); font: 12px/1.45 ui-monospace, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 40vh; overflow: auto; margin: 0 0 var(--s3); }
+.dialog .result { background: var(--col-todo); border: 2px solid var(--ink); border-radius: 8px; padding: var(--s3); margin: 0 0 var(--s3); max-height: 40vh; overflow: auto; }
+.result .verdict { margin: 0 0 var(--s2); font-size: 15px; font-weight: 900; overflow-wrap: anywhere; }
+.result dl { margin: 0; display: grid; gap: var(--s1); }
+.result dl div { display: grid; grid-template-columns: 5.5rem minmax(0, 1fr); gap: var(--s2); font-size: 13px; }
+.result dt { color: var(--muted); font-weight: 700; }
+.result dd { margin: 0; font-weight: 700; overflow-wrap: anywhere; }
+.result dd.wide { grid-column: 1 / -1; }
 .tlive { font-size: 11px; font-weight: 700; color: var(--muted); margin-top: var(--s1); overflow-wrap: anywhere; }
 .tnote { font-size: 11px; font-weight: 700; margin-top: var(--s1); overflow-wrap: anywhere; }
 .tnote.bad { color: var(--danger); }
@@ -246,14 +262,11 @@ button { cursor: pointer; }
 .dm .field { flex: 1; min-width: 0; }
 .status { position: fixed; top: 56px; left: 50%; transform: translateX(-50%); z-index: 50; padding: var(--s2) var(--s4); font-size: 13px; font-weight: 800; background: var(--yellow); }
 
-/* ---------- sesi Claude Code ---------- */
-.sessbtn { position: fixed; top: var(--s3); right: calc(50% + 4px); z-index: 24; }
-.sessions { position: fixed; top: 56px; left: 50%; transform: translateX(-50%); z-index: 26; width: 360px; max-height: 72vh; overflow-y: auto; padding: var(--s3); }
-.sessions h2 { margin: 0 0 var(--s2); font-size: 15px; font-weight: 900; }
+/* ---------- sesi Claude Code (bagian di panel kiri) ---------- */
 .sform { display: grid; gap: var(--s2); margin-bottom: var(--s3); }
 .sform textarea.field { resize: vertical; min-height: 64px; }
 .slist { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--s2); }
-.sess { padding: var(--s2) var(--s3); box-shadow: 0 3px 0 var(--ink); }
+.sess { padding: var(--s2); background: var(--paper); border: 2px solid var(--ink); border-radius: 8px; }
 .shead { display: flex; justify-content: space-between; align-items: center; gap: var(--s2); }
 .chip { font-size: 11px; font-weight: 800; padding: var(--s1) var(--s2); border: 2px solid var(--ink); border-radius: 6px; background: var(--col-todo); }
 .chip.running { background: var(--col-progress); }
@@ -298,7 +311,6 @@ button { cursor: pointer; }
   .side.right { top: calc(50% + var(--s2)); bottom: 150px; } /* menyisakan ruang chat dan dok di bawahnya */
   .chat { left: var(--s3); right: var(--s3); }
   .dock { max-width: calc(100% - 2 * var(--s4)); white-space: normal; flex-wrap: wrap; justify-content: center; }
-  .sessions { width: auto; left: var(--s3); right: var(--s3); transform: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {

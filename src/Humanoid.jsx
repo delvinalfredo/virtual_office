@@ -5,6 +5,7 @@ import * as THREE from 'three'
 import { toonMat, basicMat, OUTLINE_MAT } from './toon'
 import { lookFor, INK } from './looks'
 import { damp } from './motion'
+import { crowd } from './crowd'
 import { Merged } from './merge'
 
 // Geometri dibuat sekali dan dipakai semua karakter.
@@ -171,6 +172,12 @@ function Humanoid({ id = 'kamu', label, working = false, sitting = false, height
   const eyeR = useRef()
   const s = useRef({ amp: 0, work: 0, sit: 0, phase: 0, has: false, px: 0, pz: 0, blinkAt: 0, off: 0 })
   const wp = useRef(new THREE.Vector3())
+
+  useEffect(() => {
+    const o = root.current
+    crowd.add(o)
+    return () => crowd.delete(o)
+  }, [])
 
   useFrame((state, rawDt) => {
     const dt = Math.min(rawDt, 0.05)

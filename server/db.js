@@ -59,6 +59,8 @@ CREATE TABLE IF NOT EXISTS session_log (
 `)
 const KEEP_LOG = 200
 if (!db.prepare('PRAGMA table_info(session_log)').all().some((c) => c.name === 'epic_id')) db.exec('ALTER TABLE session_log ADD COLUMN epic_id INTEGER')
+// tokens: input + penulisan cache + output sesi itu (bacaan cache tidak dihitung, jumlahnya besar dan murah)
+if (!db.prepare('PRAGMA table_info(session_log)').all().some((c) => c.name === 'tokens')) db.exec('ALTER TABLE session_log ADD COLUMN tokens INTEGER NOT NULL DEFAULT 0')
 
 // Pekerjaan besar: satu permintaan yang dipecah perencana menjadi beberapa task Claude. Hanya untuk pemilik komputer.
 //   status: planning (perencana berjalan) | planned (rencana jadi, menunggu dijalankan) | running | paused (anggaran habis)
@@ -95,9 +97,11 @@ if (n === 0) {
 }
 
 export const getAgents = () => db.prepare('SELECT * FROM agents').all()
-// cost: jumlah biaya semua sesi task itu (0 untuk task simulasi)
+// cost dan tokens: jumlah semua sesi task itu (0 untuk task simulasi)
 export const getTasks = () =>
-  db.prepare('SELECT t.*, (SELECT COALESCE(SUM(cost), 0) FROM session_log WHERE task_id = t.id) AS cost FROM tasks t ORDER BY t.id DESC').all()
+  db.prepare(`SELECT t.*, (SELECT COALESCE(SUM(cost), 0) FROM session_log WHERE task_id = t.id) AS cost,
+                     (SELECT COALESCE(SUM(tokens), 0) FROM session_log WHERE task_id = t.id) AS tokens
+              FROM tasks t ORDER BY t.id DESC`).all()
 
 // antrian: yang paling lama menunggu duluan (getTasks sengaja DESC untuk tampilan board)
 export const getTasksByStatus = (status) =>
@@ -135,7 +139,7 @@ export const insertClaudeTask = (title, projectId, prompt, roles = null) =>
     .run(title, projectId, prompt, roles ? JSON.stringify(roles) : null)
 // tampilan untuk semua pemain di jaringan: tanpa instruksi, hasil, proyek, peran, biaya, dan id sesi milik pemilik
 export const publicTask = (t) => {
-  const { prompt: _prompt, detail: _detail, session_id: _session, project_id: _project, roles: _roles, cost: _cost, branch: _branch, worktree: _worktree, base: _base, epic_id: _epic, key: _key, deps: _deps, attempts: _attempts, checks: _checks, ...rest } = t
+  const { prompt: _prompt, detail: _detail, session_id: _session, project_id: _project, roles: _roles, cost: _cost, tokens: _tokens, branch: _branch, worktree: _worktree, base: _base, epic_id: _epic, key: _key, deps: _deps, attempts: _attempts, checks: _checks, ...rest } = t
   // judul task pekerjaan besar ditulis perencana dari isi proyek, jadi pemain lain hanya melihat nomornya
   return _epic ? { ...rest, title: `Bagian pekerjaan besar #${rest.id}` } : rest
 }
@@ -144,7 +148,7 @@ export const publicTask = (t) => {
 // Biaya pekerjaan disimpan di barisnya sendiri (spent), bukan dijumlah dari session_log yang dipangkas 200 baris:
 // kalau tidak, angka pekerjaan lama menyusut dan batas anggarannya ikut longgar.
 if (!db.prepare('PRAGMA table_info(epics)').all().some((c) => c.name === 'spent')) db.exec('ALTER TABLE epics ADD COLUMN spent REAL NOT NULL DEFAULT 0')
-const EPIC_COST = 'e.spent AS cost'
+const EPIC_COST = 'e.spent AS cost, (SELECT COALESCE(SUM(tokens), 0) FROM session_log WHERE epic_id = e.id) AS tokens'
 export const addEpicCost = (id, cost) => db.prepare('UPDATE epics SET spent = spent + ? WHERE id=?').run(cost, id)
 export const insertEpic = ({ title, projectId, prompt, budget, auto }) =>
   db.prepare('INSERT INTO epics (title, project_id, prompt, budget, auto) VALUES (?,?,?,?,?)').run(title, projectId, prompt, budget, auto ? 1 : 0).lastInsertRowid
@@ -186,15 +190,16 @@ export const numTasks = {
 }
 
 export const logSession = (r) => {
-  db.prepare(`INSERT INTO session_log (task_id, epic_id, project, state, runs, tools, denials, cost, seconds, subagents, result, error, started_at, ended_at)
-              VALUES (@task_id, @epic_id, @project, @state, @runs, @tools, @denials, @cost, @seconds, @subagents, @result, @error, @started_at, @ended_at)`).run({ epic_id: null, ...r })
+  db.prepare(`INSERT INTO session_log (task_id, epic_id, project, state, runs, tools, denials, cost, tokens, seconds, subagents, result, error, started_at, ended_at)
+              VALUES (@task_id, @epic_id, @project, @state, @runs, @tools, @denials, @cost, @tokens, @seconds, @subagents, @result, @error, @started_at, @ended_at)`).run({ epic_id: null, tokens: 0, ...r })
   db.prepare('DELETE FROM session_log WHERE id <= (SELECT MAX(id) FROM session_log) - ?').run(KEEP_LOG)
 }
 export const getHistory = (limit = 50) => db.prepare('SELECT * FROM session_log ORDER BY id DESC LIMIT ?').all(limit)
-// biaya sesi hari ini (menurut jam komputer) dan seluruh riwayat yang tersimpan
+// biaya dan token sesi hari ini (menurut jam komputer) dan seluruh riwayat yang tersimpan
 export const costSummary = () => db.prepare(`
   SELECT COALESCE(SUM(CASE WHEN date(ended_at, 'localtime') = date('now', 'localtime') THEN cost END), 0) AS today,
-         COALESCE(SUM(cost), 0) AS total, COUNT(*) AS runs
+         COALESCE(SUM(CASE WHEN date(ended_at, 'localtime') = date('now', 'localtime') THEN tokens END), 0) AS tokens_today,
+         COALESCE(SUM(cost), 0) AS total, COALESCE(SUM(tokens), 0) AS tokens_total, COUNT(*) AS runs
   FROM session_log`).get()
 
 export default db

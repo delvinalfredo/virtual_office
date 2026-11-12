@@ -30,7 +30,7 @@ const noBranch = { branch: null, worktree: null, base: null }
 const parseRoles = (v) => { try { const r = JSON.parse(v); return Array.isArray(r) ? r : null } catch { return null } }
 const now = () => new Date().toISOString()
 
-export function createWork({ app, control, sessions, projects, kitDir, workRoot, logEvent, broadcast, check = runChecks }) {
+export function createWork({ app, control, sessions, projects, kitDir, workRoot, logEvent, broadcast, check = runChecks, tokensToday = () => null }) {
   const BUDGET = Number(process.env.KANTOR_MAX_BUDGET)
   const MAX_BUDGET = Number.isFinite(BUDGET) && BUDGET > 0 ? BUDGET : 2
   // model sesi utama: yang menengah untuk mengerjakan, yang mahal hanya untuk merencanakan (subagent punya modelnya sendiri, lihat kit.js)
@@ -171,7 +171,7 @@ export function createWork({ app, control, sessions, projects, kitDir, workRoot,
       logSession({
         task_id: t?.id ?? null, epic_id: epicId,
         project: s.projectName, state: s.state, runs: s.runs, tools: s.tools,
-        denials: s.result?.denials ?? 0, cost: s.result?.cost ?? 0, seconds: s.result?.seconds ?? null,
+        denials: s.result?.denials ?? 0, cost: s.result?.cost ?? 0, tokens: s.result?.tokens ?? 0, seconds: s.result?.seconds ?? null,
         subagents: JSON.stringify([...s.subagents.values()].map((x) => x.type)),
         result: s.result?.text || s.lastText || null, error: s.error ?? null,
         started_at: new Date(s.startedAt).toISOString(), ended_at: now(),
@@ -601,7 +601,11 @@ export function createWork({ app, control, sessions, projects, kitDir, workRoot,
     res.status(201).json(kitList())
   })
   app.get('/api/history', control(true), (_req, res) => res.json(getHistory(50)))
-  app.get('/api/costs', control(true), (_req, res) => res.json(costSummary()))
+  // token aplikasi (riwayat sesi), token seluruh Claude Code di komputer ini, dan sisa jatah akun. Membuka ini ikut
+  // menyegarkan sisa jatah bila datanya sudah lama.
+  const usage = () => ({ ...costSummary(), limits: sessions.limits(), tokens_machine: tokensToday() })
+  app.get('/api/costs', control(true), (_req, res) => { sessions.refreshLimits(); res.json(usage()) })
+  app.post('/api/usage/refresh', control(true), async (_req, res) => { await sessions.refreshLimits({ force: true }); res.json(usage()) })
 
   return {
     dispatch,

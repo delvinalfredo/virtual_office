@@ -8,6 +8,9 @@
 // - Tanpa --bare, karena --bare tidak memakai login. Akibatnya hook dan MCP milik proyek ikut berjalan.
 // - Mode tanpa layar tidak bisa bertanya izin: tool di luar daftar ditolak, dan jumlahnya dilaporkan.
 import { spawn } from 'node:child_process'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { describeTool, clean } from './live.js'
 
 export const MAX_PROMPT = 4000
@@ -18,6 +21,24 @@ const FINISHED = new Set(['done', 'error', 'stopped'])
 export function createSessions({ projects, bin = 'claude', maxRunning = 3, timeoutMs = 30 * 60 * 1000, hooks = {} }) {
   const byId = new Map()
   let counter = 0
+  // sisa jatah langganan (jendela 5 jam dan mingguan) dari rate_limit_event terakhir; null sebelum ada sesi yang melapor
+  let limits = null
+  let probe = null // sesi kecil yang sedang membaca sisa jatah
+  let probeAt = 0
+  const FRESH_MS = 10 * 60 * 1000
+
+  // rate_limit_event membawa pemakaian jendela langganan (0 sampai 1) dan waktu resetnya, per akun (bukan per aplikasi)
+  function applyLimits(m) {
+    const w = m.rate_limit_info?.unifiedWindows
+    if (!w || typeof w !== 'object') return
+    const pick = (x) => (Number.isFinite(x?.utilization) && Number.isFinite(x?.resetsAt) ? { used: Math.min(1, Math.max(0, x.utilization)), resetsAt: x.resetsAt * 1000 } : null)
+    limits = { fiveHour: pick(w.five_hour) ?? limits?.fiveHour ?? null, sevenDay: pick(w.seven_day) ?? limits?.sevenDay ?? null, at: Date.now() }
+  }
+  // jendela yang waktu resetnya sudah lewat tidak lagi benar, jadi dibuang
+  function limitsView() {
+    const live = (w) => (w && w.resetsAt > Date.now() ? w : null)
+    return limits && { fiveHour: live(limits.fiveHour), sevenDay: live(limits.sevenDay), at: limits.at }
+  }
   // hook milik pemanggil (siaran, karakter) tidak boleh menjatuhkan sesi bila error
   const emit = (name, ...a) => { try { hooks[name]?.(...a) } catch { /* abaikan */ } }
   const running = () => [...byId.values()].filter((s) => s.state === 'running' || s.state === 'stopping')
@@ -48,6 +69,8 @@ export function createSessions({ projects, bin = 'claude', maxRunning = 3, timeo
         }
       }
       emit('onChange')
+    } else if (m.type === 'rate_limit_event') {
+      applyLimits(m)
     } else if (m.type === 'result') {
       const ok = m.is_error !== true && m.subtype === 'success'
       const text = typeof m.result === 'string' ? m.result : Array.isArray(m.errors) ? m.errors.join('; ') : ''
@@ -58,6 +81,7 @@ export function createSessions({ projects, bin = 'claude', maxRunning = 3, timeo
         seconds: Number.isFinite(m.duration_ms) ? Math.round(m.duration_ms / 100) / 10 : null,
         denials: Array.isArray(m.permission_denials) ? m.permission_denials.length : 0,
         cost: Number.isFinite(m.total_cost_usd) && m.total_cost_usd >= 0 ? m.total_cost_usd : 0,
+        tokens: ['input_tokens', 'cache_creation_input_tokens', 'output_tokens'].reduce((n, k) => n + (m.usage?.[k] > 0 && Number.isFinite(m.usage[k]) ? m.usage[k] : 0), 0),
       }
       if (ok && text) s.lastText = clip(text, 400)
     }
@@ -212,5 +236,35 @@ export function createSessions({ projects, bin = 'claude', maxRunning = 3, timeo
       return typeof id === 'string' && [...byId.values()].some((s) => s.claudeId === id)
     },
     get(id) { return byId.get(id) ?? null },
+    limits: limitsView,
+    // Satu sesi kecil (Haiku, tanpa tool, di folder kosong; sekitar 6 ribu token) hanya untuk membaca sisa jatah, karena
+    // Claude Code melaporkannya cuma di dalam sesi. Tanpa force, dilewati bila datanya masih baru atau baru dicoba.
+    refreshLimits({ force = false } = {}) {
+      if (probe) return probe
+      if (!force && (Date.now() - probeAt < FRESH_MS || (limits && Date.now() - limits.at < FRESH_MS))) return Promise.resolve(limitsView())
+      probeAt = Date.now()
+      probe = new Promise((resolve) => {
+        const args = ['-p', '.', '--model', 'haiku', '--tools', '', '--disable-slash-commands', '--strict-mcp-config', '--output-format', 'stream-json', '--verbose', '--max-budget-usd', '0.05']
+        const [cmd, argv] = /\.m?js$/.test(bin) ? [process.execPath, [bin, ...args]] : [bin, args]
+        let child
+        let buf = ''
+        try {
+          const cwd = path.join(os.tmpdir(), 'kantor-probe')
+          fs.mkdirSync(cwd, { recursive: true })
+          child = spawn(cmd, argv, { cwd, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true })
+        } catch { return resolve(limitsView()) }
+        const timer = setTimeout(() => child.kill(), 60000)
+        timer.unref()
+        const eat = (line) => { try { const m = JSON.parse(line); if (m?.type === 'rate_limit_event') applyLimits(m) } catch { /* baris bukan JSON */ } }
+        child.stdout.on('data', (d) => {
+          buf += d
+          let i
+          while ((i = buf.indexOf('\n')) >= 0) { eat(buf.slice(0, i)); buf = buf.slice(i + 1) }
+        })
+        child.on('error', () => { clearTimeout(timer); resolve(limitsView()) })
+        child.on('close', () => { clearTimeout(timer); eat(buf); resolve(limitsView()) })
+      }).finally(() => { probe = null })
+      return probe
+    },
   }
 }

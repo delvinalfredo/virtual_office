@@ -34,11 +34,11 @@ Kantor 3D di tengah, dua panel di kiri dan kanan. Kiri: pekerjaan (sedang dikerj
 
 ## Memantau Claude Code di kantor
 
-Kantor bisa menampilkan subagent Claude Code yang sedang bekerja sungguhan. Setiap subagent muncul sebagai karakter tamu: masuk lewat pintu, duduk di ruang meeting, bubble-nya mengikuti tool yang dipakai, lalu berkonfeti dan pulang saat selesai. Kantor hanya menerima event dari hook Claude Code. Ia tidak memanggil Claude dan tidak memegang kredensialmu.
+Kantor bisa menampilkan subagent Claude Code yang sedang bekerja sungguhan. Setiap subagent dikerjakan anggota tim kantor: ia berjalan ke mejanya, aktivitasnya terbaca di bagian Tim mengikuti tool yang dipakai, lalu berkonfeti saat selesai. Bila semua anggota sibuk, subagentnya tetap jalan tetapi tidak ada karakter yang mewakilinya. Kantor hanya menerima event dari hook Claude Code. Ia tidak memanggil Claude dan tidak memegang kredensialmu.
 
 Cara paling mudah: salin perintah `/virtual` sekali dengan `mkdir -p ~/.claude/commands && cp scripts/virtual.md ~/.claude/commands/virtual.md`, lalu di Claude Code proyek mana pun ketik `/virtual` (pasang), `/virtual status`, `/virtual hapus`, atau `/virtual demo`. Perintah itu menjalankan skrip di bawah, dan skripnya cukup dijalankan sekali karena menulis ke pengaturan global.
 
-Tanpa perintah slash, untuk semua proyek sekaligus: jalankan `node scripts/pasang-hook.mjs`. Skrip itu menyimpan cadangan `settings.json.bak-kantor`, menambahkan hook ke `~/.claude/settings.json` tanpa mengubah isi lainnya, dan bisa dicabut dengan `node scripts/pasang-hook.mjs --hapus`. Untuk mencoba tanpa Claude Code, jalankan `node scripts/demo-agen.mjs` dan lihat tiga tamu agen masuk, bekerja, lalu pulang.
+Tanpa perintah slash, untuk semua proyek sekaligus: jalankan `node scripts/pasang-hook.mjs`. Skrip itu menyimpan cadangan `settings.json.bak-kantor`, menambahkan hook ke `~/.claude/settings.json` tanpa mengubah isi lainnya, dan bisa dicabut dengan `node scripts/pasang-hook.mjs --hapus`. Untuk mencoba tanpa Claude Code, jalankan `node scripts/demo-agen.mjs` dan lihat tiga anggota tim berjalan ke meja, bekerja, lalu berkonfeti.
 
 Cara manual: pasang hook di `.claude/settings.json` proyek yang ingin dipantau, atau di `~/.claude/settings.json` untuk semua proyek. Server kantor harus jalan di port 3000.
 

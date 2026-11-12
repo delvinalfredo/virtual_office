@@ -205,3 +205,24 @@ test('biaya sesi dibaca dari hasil; tanpa angka sahih dianggap nol', async () =>
   await waitFor(() => get(sessions, id).state === 'done')
   assert.equal(get(sessions, id).result.cost, 0.25)
 })
+
+test('token sesi tanpa bacaan cache, dan sisa jatah dibaca dari rate_limit_event', async () => {
+  const { sessions } = make()
+  assert.equal(sessions.limits(), null)
+  const { id } = sessions.start({ projectId: 'a', prompt: 'hitung token' })
+  await waitFor(() => get(sessions, id).state === 'done')
+  assert.equal(get(sessions, id).result.tokens, 250)
+  const { at, ...windows } = sessions.limits()
+  assert.ok(at > 0)
+  assert.deepEqual(windows, { fiveHour: { used: 0.25, resetsAt: 1900000000000 }, sevenDay: { used: 0.5, resetsAt: 1900100000000 } })
+})
+
+test('sisa jatah bisa diambil tanpa sesi tugas, dan tidak diulang selama datanya masih baru', async () => {
+  const { sessions } = make()
+  const first = await sessions.refreshLimits()
+  assert.equal(first.fiveHour.used, 0.25)
+  const t = first.at
+  await new Promise((r) => setTimeout(r, 5))
+  assert.equal((await sessions.refreshLimits()).at, t) // masih baru: tidak menjalankan claude lagi
+  assert.ok((await sessions.refreshLimits({ force: true })).at > t) // dipaksa: dibaca ulang
+})

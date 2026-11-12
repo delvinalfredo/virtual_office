@@ -1,7 +1,6 @@
 import { Board, TaskForm } from './Board'
 import { ChatUI } from './ChatUI'
 import { AgentDM } from './AgentDM'
-import { Sessions } from './Sessions'
 import { useKantor } from './useKantor'
 import { useControl } from './useControl'
 import { useState, useCallback, useMemo, useRef, lazy, Suspense } from 'react'
@@ -113,7 +112,6 @@ export default function App() {
         tick={tasksTick}
         form={<TaskForm onAdd={addTask} control={control} />}
       />
-      <Sessions control={control} />
       <ChatUI chat={chat} onSend={say} />
       {dmAgent && (
         <AgentDM

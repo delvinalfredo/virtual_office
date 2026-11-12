@@ -5,7 +5,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import db, { getAgents, getTasks, getTasksByStatus, recoverStuckTasks, RESTART_NOTE, insertTask, updateTask, publicTask } from './db.js'
-import { clampToRoom, resolveObstacles, DESK_SEATS, SPOTS, SEATS, MEET_LEAD } from '../src/office-plan.js'
+import { clampToRoom, resolveObstacles, DESK_SEATS, SPOTS, MEET_LEAD, MEETING } from '../src/office-plan.js'
 import { TOILET, route, plan } from './route.js'
 import { parseHook } from './live.js'
 import crypto from 'node:crypto'
@@ -15,6 +15,7 @@ import { installKit } from './kit.js'
 import { createProject } from './scaffold.js'
 import { createWork } from './work.js'
 import { createSessions } from './sessions.js'
+import { createMachineTokens } from './usage.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const app = express()
@@ -39,7 +40,7 @@ const server = http.createServer(app)
 const wss = new WebSocketServer({ server, maxPayload: 4096 })
 
 // ---- tempat di kantor ----
-// Tempat pakai (SPOTS, SEATS, MEET_LEAD, DESK_SEATS) ada di src/office-plan.js, dibagi dengan klien; rute ke sana
+// Tempat pakai (SPOTS, MEET_LEAD, DESK_SEATS) ada di src/office-plan.js, dibagi dengan klien; rute ke sana
 // ada di server/route.js.
 // agent hanya bersuara untuk kerja dan aktivitas ini: satu bubble saat berangkat, lalu diam
 const ACT_BUBBLE = {
@@ -137,103 +138,71 @@ const HANGOUTS = [
   { x: 0, z: 2.5 }, { x: 0, z: 7.7 }, { x: -9, z: 1.5 }, { x: 9, z: 0.5 }, { x: -9, z: 5.5 }, { x: 1.5, z: 10.5 },
 ]
 
-// ---- agen nyata dari hook Claude Code (server/live.js, .claude/settings.json) ----
-// Tiap subagent yang berjalan muncul sebagai karakter tamu: masuk lewat pintu depan, duduk di
-// kursi ruang meeting, bubble-nya mengikuti tool yang sedang dipakai, lalu berkonfeti dan pulang.
-// Mereka memakai gerak dan loop yang sama dengan agent simulasi, tapi tidak punya task di database.
-const LIVE_MAX = 12
-const LINGER_MS = Number(process.env.LIVE_LINGER_MS ?? 4000)
-const LIVE_STALE_MS = 15 * 60 * 1000 // SubagentStop yang tak pernah datang (sesi mati): pulangkan sendiri
-const DOOR = { x: 0, z: 10.4 }
+// ---- sesi Claude Code dikerjakan anggota tim ----
+// Tiap sesi dan subagent Claude Code (dari dashboard, dari papan, maupun hook di sesi mana pun di komputer ini)
+// diwakili anggota tim tetap: ia berjalan ke mejanya dan bubble-nya (terbaca di bagian Tim) mengikuti tool yang dipakai.
+// Tidak ada tamu. Bila semua anggota sibuk, sesinya tetap jalan tetapi tidak ada karakter yang mewakilinya.
+const STALE_MS = 15 * 60 * 1000 // SubagentStop yang tak pernah datang (sesi mati): anggotanya dibebaskan sendiri
 const DONE = 'Selesai' // klien (AgentAvatars.jsx) memakainya sebagai pemicu konfeti
 // jam simulasi: naik tepat 50 ms tiap tick, apa pun kondisi timer. Klien memakainya (bukan waktu tiba paket)
 // untuk menginterpolasi gerak agent, jadi jitter jaringan dan timer tidak terlihat sebagai gerak patah.
 let simT = 0
-let dirty = false // ada perubahan di luar gerak (agen datang, pergi, ganti bubble) yang perlu disiarkan
+let dirty = false // ada perubahan di luar gerak (ganti bubble, pose) yang perlu disiarkan
 const pendingAsk = new Map() // tipe subagent → deskripsi dari sesi utama, dipakai SubagentStart berikutnya
-const liveAgents = () => [...agents.values()].filter((a) => a.live)
 
 const pubAgent = (a) => ({
   id: a.id, role: a.role, x: +a.x.toFixed(2), z: +a.z.toFixed(2), heading: +a.heading.toFixed(2), state: a.state, bubble: a.bubble, pose: a.pose,
-  ...(a.live && { live: true, look: a.look, label: a.label }),
 })
 
-// Sesi dan subagent yang dijalankan dari papan diwakili anggota tim tetap, bukan tamu: perencana dan reviewer
-// oleh Tech Lead, penguji oleh QA, sisanya oleh programmer. Anggota yang sedang mewakili (a.busy) berjalan ke
-// mejanya dan bubble-nya mengikuti tool yang dipakai. Bila semua anggota peran itu sibuk, muncul tamu seperti biasa.
+// Perencana dan reviewer diwakili Tech Lead, penguji oleh QA, desain oleh designer, sisanya programmer.
 const STAFF = {
   architect: 'lead', planner: 'lead', 'code-reviewer': 'lead', 'security-reviewer': 'lead',
   'tdd-guide': 'qa', 'e2e-runner': 'qa',
 }
 const staffFor = (type) => STAFF[type] ?? (/design|front|ui|ux/.test(type) ? 'designer' : /test|qa|review|audit|secur/.test(type) ? 'qa' : 'programmer')
-const standIn = new Map() // id tamu → id anggota tim yang mewakilinya
+const standIn = new Map() // id sesi atau subagent → id anggota tim yang mewakilinya
 
+// Anggota senggang dengan peran yang diminta; bila peran itu penuh, anggota senggang mana pun. Anggota yang sedang
+// mewakili (a.busy) berjalan ke mejanya, jadi dispatcher dan perilaku senggang melewatinya sampai liveStop.
 function borrow(id, role, text) {
-  const a = [...agents.values()].find((x) => !x.live && !x.busy && x.role === role && x.task == null && (x.state === 'idle' || x.idleWalk))
+  const free = [...agents.values()].filter((x) => !x.busy && !x.meet && x.task == null && (x.state === 'idle' || x.idleWalk))
+  const a = free.find((x) => x.role === role) ?? free[0]
   if (!a) return false
-  a.busy = id
-  a.state = 'walking'
-  a.idleWalk = false
-  a.bubble = text
-  a.restT = 0
+  Object.assign(a, { busy: id, state: 'walking', idleWalk: false, bubble: text, restT: 0, lastEvent: Date.now() })
   standIn.set(id, a.id)
   goTo(a, a.desk)
   return true
 }
 
-// staff: peran anggota tim yang diminta mewakili (null: selalu tamu, dipakai untuk sesi dari luar dashboard)
-function liveStart(rawId, type, staff = null) {
+function liveStart(rawId, type, staff = staffFor(type)) {
   const id = `live-${rawId}`
-  if (agents.has(id) || standIn.has(id)) return
+  if (standIn.has(id)) return
   const queue = pendingAsk.get(type) ?? []
   while (queue.length && Date.now() - queue[0].at > 120000) queue.shift()
   const ask = queue.shift()
-  if (staff && borrow(id, staff, ask?.text || 'Mulai bekerja')) return
-  if (liveAgents().length >= LIVE_MAX) return
-  const same = liveAgents().filter((a) => a.look === type).length
-  const a = {
-    id, role: 'live', live: true, skill: 1, look: type, label: same ? `${type} ${same + 1}` : type,
-    x: DOOR.x, z: DOOR.z, tx: DOOR.x, tz: DOOR.z, state: 'walking', heading: Math.PI,
-    task: null, bubble: ask?.text || 'Mulai bekerja', restT: 0, pose: null, spot: null, go: null, lastEvent: Date.now(),
-  }
-  agents.set(id, a)
-  goTo(a, freeSpot(SEATS) ?? { x: (Math.random() - 0.5) * 6, z: -3.5 + Math.random() * 2.5 })
+  borrow(id, staff, ask?.text || 'Mulai bekerja')
 }
 
 function liveTool(rawId, type, text) {
-  const a = agents.get(standIn.get(`live-${rawId}`) ?? `live-${rawId}`)
+  const a = agents.get(standIn.get(`live-${rawId}`))
   if (!a) {
-    // hook dipasang di tengah proses: SubagentStart terlewat, jadi agen dibuat dari event tool pertama
-    if (type) { liveStart(rawId, type); const n = agents.get(`live-${rawId}`); if (n) n.bubble = text }
+    // hook dipasang di tengah proses: SubagentStart terlewat, jadi wakilnya dicari dari event tool pertama
+    if (type) { liveStart(rawId, type); const n = agents.get(standIn.get(`live-${rawId}`)); if (n) n.bubble = text }
     return
   }
-  if (a.done) return
   a.bubble = text
   a.lastEvent = Date.now()
   dirty = true
 }
 
+// anggota tim yang mewakili kembali senggang di tempatnya; perilaku senggang mengambil alih sesudah jeda
 function liveStop(id, text = DONE) {
-  if (standIn.has(id)) {
-    // anggota tim yang mewakili kembali senggang di tempatnya; perilaku senggang mengambil alih sesudah jeda
-    const m = agents.get(standIn.get(id))
-    standIn.delete(id)
-    if (m?.busy === id) {
-      Object.assign(m, { busy: null, state: 'idle', tx: m.x, tz: m.z, vias: [], bubble: text, restT: 3 })
-      dirty = true
-    }
-    return
+  const m = agents.get(standIn.get(id))
+  standIn.delete(id)
+  if (m?.busy === id) {
+    Object.assign(m, { busy: null, state: 'idle', tx: m.x, tz: m.z, vias: [], bubble: text, restT: 3 })
+    dirty = true
   }
-  const a = agents.get(id)
-  if (!a || a.done) return
-  a.done = true
-  a.state = 'idle'
-  a.tx = a.x
-  a.tz = a.z
-  a.vias = []
-  a.bubble = text
-  a.leaveAt = Date.now() + LINGER_MS
-  dirty = true
 }
 
 function applyHook(act) {
@@ -367,12 +336,63 @@ wss.on('connection', (ws) => {
   })
 })
 
+// ---- rapat: task simulasi baru membuat semua agent yang senggang kumpul di ruang meeting dulu ----
+// gather: jalan ke ruang meeting → talk: ngobrol sebentar → selesai: dispatch membagi task dan semua pulang ke meja.
+// Agent yang sedang bekerja atau mewakili sesi tidak diganggu. Flag a.meet menahan perilaku senggang dan review lead.
+const GATHER_MAX = 25000 // batas tunggu agent yang belum sampai
+const TALK_MS = 7000
+const TALK = ['oke, siap', 'estimasinya berapa?', 'gue ambil', 'butuh spek dulu', 'ada yang mau bantu?']
+let meeting = null // { phase, at, crew: [id agent] }
+const briefed = new Set() // id task yang sudah dibahas di rapat, supaya antrean lama tidak memanggil rapat lagi
+
+function startMeeting() {
+  const crew = [...agents.values()]
+    .filter((a) => !a.busy && a.task == null && (a.state === 'idle' || a.idleWalk))
+    .sort((a, b) => (b.role === 'lead') - (a.role === 'lead')) // lead duluan, supaya kebagian kursinya
+  if (!crew.some((a) => a.role !== 'lead' && a.state === 'idle')) return false // tak ada yang bisa mengerjakan
+  const here = []
+  for (const a of crew) {
+    const spot = freeSpot(MEETING)
+    if (!spot) break
+    Object.assign(a, { meet: true, state: 'walking', idleWalk: true, bubble: null, restT: 0 })
+    goTo(a, spot)
+    here.push(a.id)
+  }
+  if (!here.length) return false
+  meeting = { phase: 'gather', at: Date.now(), crew: here }
+  return true
+}
+
+// true selama rapat masih jalan (dispatch menunggu)
+function runMeeting(todo) {
+  const now = Date.now()
+  const crew = meeting.crew.map((id) => agents.get(id))
+  if (meeting.phase === 'gather') {
+    if (!crew.every((a) => a.state === 'idle' && !a.go) && now - meeting.at < GATHER_MAX) return true
+    meeting = { ...meeting, phase: 'talk', at: now }
+    const lead = crew.find((a) => a.role === 'lead')
+    const news = todo.length > 1 ? `${todo.length} kerjaan baru` : todo[0] ? `"${todo[0].title}"` : 'kerjaan baru'
+    for (const a of crew) a.bubble = a === lead ? `Ada ${news}` : TALK[Math.floor(Math.random() * TALK.length)]
+    logEvent(lead?.id ?? null, 'rapat untuk task baru')
+    dirty = true
+    return true
+  }
+  if (now - meeting.at < TALK_MS) return true
+  for (const a of crew) { a.meet = false; a.bubble = null }
+  for (const t of todo) briefed.add(t.id)
+  meeting = null
+  dirty = true
+  return false
+}
+
 // ---- dispatch: berikan task todo ke agent idle ----
 function dispatch() {
-  for (const t of getTasksByStatus('todo')) {
-    if (t.mode !== 'sim') continue // task Claude dikerjakan sesi Claude Code, bukan agent simulasi
-    const agent = [...agents.values()].find((a) => a.state === 'idle' && a.role !== 'lead' && !a.live)
+  const todo = getTasksByStatus('todo').filter((t) => t.mode === 'sim') // task Claude dikerjakan sesi Claude Code
+  if (meeting ? runMeeting(todo) : todo.some((t) => !briefed.has(t.id)) && startMeeting()) return
+  for (const t of todo) {
+    const agent = [...agents.values()].find((a) => a.state === 'idle' && a.role !== 'lead')
     if (!agent) break
+    briefed.delete(t.id)
     assign(agent, t)
   }
 }
@@ -381,7 +401,7 @@ function dispatch() {
 function dispatchReview() {
   for (const t of getTasksByStatus('review')) {
     if (t.mode !== 'sim') continue // task Claude menunggu keputusan pemilik komputer, bukan review lead simulasi
-    const lead = [...agents.values()].find((a) => a.state === 'idle' && a.role === 'lead')
+    const lead = [...agents.values()].find((a) => a.state === 'idle' && a.role === 'lead' && !a.meet)
     if (!lead) break // lead sibuk → nunggu
     // lead berjalan ke kursinya di ruang meeting untuk review
     updateTask(t.id, { status: 'in_progress', agent_id: lead.id, progress: 0, est: 3 })
@@ -423,7 +443,7 @@ const CLOSERS = {
   programmer: (f, n) => `Selesai\nfiles: ${f} file diubah (+${n * 37} -${n * 8})\ntest: ${n * 4} passed, 0 gagal`,
   designer: (f) => `Mockup siap\n${f} frame baru\nhandoff: siap di-review tim`,
   qa: (f, n) => `Uji tuntas\n${n * 6} kasus dijalankan, ${Math.max(0, n - 1)} gagal ditemukan\nkualitas: lolos`,
-  lead: (f) => `Review disetujui\nkeputusan: merge\ncatatan: ${f} poin minor (ikut sprint depat)`,
+  lead: (f) => `Review disetujui\nkeputusan: merge\ncatatan: ${f} poin minor, dikerjakan di sprint depan`,
 }
 
 // pipeline per agent: daftar { label, durasi-fraksi } — total fraksi = 1
@@ -459,24 +479,8 @@ setInterval(() => {
   dirty = false
 
   for (const a of agents.values()) {
-    // tamu agen nyata: pulang setelah selesai, atau bila kabar terakhirnya sudah terlalu lama
-    if (a.live) {
-      const now = Date.now()
-      if (!a.done && now - a.lastEvent > LIVE_STALE_MS) liveStop(a.id)
-      if (a.done && !a.leaving && now > a.leaveAt) {
-        a.leaving = true
-        goTo(a, DOOR)
-        a.state = 'walking'
-        a.idleWalk = true // supaya tiba di pintu tidak diubah jadi "working"
-        a.bubble = null
-        posChanged = true
-      }
-      if (a.leaving && Math.hypot(DOOR.x - a.x, DOOR.z - a.z) <= ARRIVE + 0.3) {
-        agents.delete(a.id)
-        posChanged = true
-        continue
-      }
-    }
+    // wakil sesi yang kabar terakhirnya sudah terlalu lama (sesi mati tanpa SubagentStop): dibebaskan
+    if (a.busy && Date.now() - a.lastEvent > STALE_MS) liveStop(a.busy)
 
     // Macet: agent berjalan lurus ke target dan bisa tertahan tegak lurus di tepi kotak meja atau dinding. Tiap
     // 1,5 detik, bila nyaris tidak bergerak, ia memilih titik koridor (WAYPOINTS) yang terlihat; bila tetap gagal
@@ -532,7 +536,7 @@ setInterval(() => {
     }
 
     // kerja: pipeline tahap baca → kerja → cek → selesai
-    if (a.state === 'working' && !a.live) a.fatigue += dt
+    if (a.state === 'working') a.fatigue += dt
     if (a.state === 'working' && a.task != null) {
       const t = db.prepare('SELECT * FROM tasks WHERE id=?').get(a.task)
       if (!t) { a.task = null; a.state = 'idle'; continue }
@@ -579,7 +583,7 @@ setInterval(() => {
 
     // idle behavior: capek sehabis kerja → ke toilet; selain itu istirahat di sofa, main game, ngopi, makan, atau
     // jalan-jalan. Agent tidak ngomong sendiri: bubble hanya untuk kerja dan aktivitas ini (satu bubble saat berangkat).
-    if (a.state === 'idle' && !a.live) {
+    if (a.state === 'idle' && !a.meet) {
       if (a.restT > 0) {
         a.restT -= dt
         if (a.restT <= 0) { a.bubble = null; dirty = true }
@@ -697,16 +701,16 @@ const sessions = createSessions({
   projects,
   bin: process.env.KANTOR_CLAUDE_BIN ?? 'claude',
   hooks: {
-    onStart: (s) => { liveStart(liveKey(s), s.projectName, s.run?.staff ?? null) },
+    onStart: (s) => { liveStart(liveKey(s), s.projectName, s.run?.staff ?? 'programmer') },
     onTool: (s, text) => liveTool(liveKey(s), s.projectName, text),
     onStop: (s) => {
       liveStop(`live-${liveKey(s)}`, { done: DONE, stopped: 'Dihentikan', error: 'Gagal' }[s.state])
       work.sessionEnded(s)
     },
-    // subagent yang dipanggil sesi tampil sebagai karakter tamu sendiri, dibaca dari stream sesi (tanpa hook terpasang)
+    // subagent yang dipanggil sesi diwakili anggota tim, dibaca dari stream sesi (tanpa hook terpasang)
     onSubagent: (s, ev) => {
       const id = `${liveKey(s)}-${ev.id}`
-      if (ev.kind === 'start') liveStart(id, ev.type, s.run ? staffFor(ev.type) : null)
+      if (ev.kind === 'start') liveStart(id, ev.type)
       else if (ev.kind === 'tool') liveTool(id, ev.type, ev.text)
       else liveStop(`live-${id}`)
     },
@@ -766,7 +770,8 @@ try {
     try { fs.rmdirSync(path.join(WORK_ROOT, name)) } catch { /* masih berisi atau dipakai: biarkan */ }
   }
 } catch { /* belum ada folder kerja */ }
-const work = createWork({ app, control, sessions, projects, kitDir: KIT_DIR, workRoot: WORK_ROOT, logEvent, broadcast })
+const machine = createMachineTokens()
+const work = createWork({ app, control, sessions, projects, kitDir: KIT_DIR, workRoot: WORK_ROOT, logEvent, broadcast, tokensToday: machine.today })
 
 // Proyek baru dari nol (folder, repo git, kit, commit pertama), dan memasang kit ke proyek yang sudah ada.
 app.post('/api/projects/new', control(true), async (req, res) => {

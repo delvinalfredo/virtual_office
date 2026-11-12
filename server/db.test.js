@@ -79,17 +79,20 @@ const log = (over = {}) => logSession({
 test('biaya: jumlah semua sesi sebuah task, dan hari ini dipisah dari yang lama', () => {
   db.exec('DELETE FROM tasks; DELETE FROM session_log')
   const id = Number(insertClaudeTask('mahal', 'p', 'x', ['planner']).lastInsertRowid)
-  log({ task_id: id, cost: 0.5 })
-  log({ task_id: id, cost: 0.25 }) // revisi: sesi kedua task yang sama
-  log({ cost: 1, ended_at: '2020-01-01T10:00:00.000Z' }) // sesi manual lama
+  log({ task_id: id, cost: 0.5, tokens: 1000 })
+  log({ task_id: id, cost: 0.25, tokens: 500 }) // revisi: sesi kedua task yang sama
+  log({ cost: 1, tokens: 7000, ended_at: '2020-01-01T10:00:00.000Z' }) // sesi manual lama
   assert.equal(getTasks().find((t) => t.id === id).cost, 0.75)
   const c = costSummary()
   assert.equal(c.today, 0.75)
   assert.equal(c.total, 1.75)
+  assert.equal(getTasks().find((t) => t.id === id).tokens, 1500)
+  assert.equal(c.tokens_today, 1500)
+  assert.equal(c.tokens_total, 8500)
   assert.equal(c.runs, 3)
   assert.equal(getTasks().find((t) => t.id === id).roles, '["planner"]')
   const shown = publicTask(getTasks().find((t) => t.id === id))
-  assert.equal('cost' in shown || 'roles' in shown, false) // biaya dan peran tidak dibagikan ke jaringan
+  assert.equal('cost' in shown || 'tokens' in shown || 'roles' in shown, false) // biaya, token, dan peran tidak dibagikan ke jaringan
 })
 
 test('riwayat: terbaru dulu dan dipangkas ke 200 baris', () => {

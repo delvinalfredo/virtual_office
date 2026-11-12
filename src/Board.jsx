@@ -3,19 +3,49 @@ import { sfx } from './sfx'
 import { lookFor } from './looks'
 import { Epics, EpicFields } from './Epics'
 import { Sec } from './Sec'
+import { tok } from './fmt'
+import { Sessions } from './Sessions'
 
-const usd = (n) => `$${(n ?? 0).toFixed(2)}`
 const clock = (at) => new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+// jendela jatah langganan yang dilaporkan Claude Code, sama dengan halaman Usage di pengaturan akun
+const WINDOWS = [['fiveHour', 'Sesi 5 jam'], ['sevenDay', 'Mingguan, semua model']]
+const resetAt = (at) => (new Date(at).toDateString() === new Date().toDateString() ? clock(at) : `${new Date(at).toLocaleDateString([], { weekday: 'short' })} ${clock(at)}`)
 const STATE = { working: 'kerja', walking: 'jalan', idle: 'senggang' }
 const CLAUDE = 'Claude Code'
 const whoLabel = (who) => (who === 'claude' ? CLAUDE : who ? lookFor(who).label : null)
 
-// Panel pantauan: angka ringkas, tim, dan log kejadian. Biaya dan jumlah sesi hanya untuk pemilik komputer.
+// Hasil task simulasi berbentuk satu judul lalu baris "kunci: isi": ditata sebagai judul dan daftar. Teks lain
+// (hasil sesi Claude, catatan pekerjaan besar) tampil apa adanya, dan keduanya punya batas tinggi dengan gulir sendiri.
+function Result({ text, plain }) {
+  const [head, ...rest] = text.split('\n')
+  const rows = rest.filter(Boolean)
+  if (plain || !rows.length || rows.length > 6 || text.length > 400) return <pre tabIndex={0} aria-label="Hasil">{text}</pre>
+  return (
+    <div className="result" tabIndex={0} aria-label="Hasil">
+      <p className="verdict">{head}</p>
+      <dl>
+        {rows.map((r, i) => {
+          const m = /^([^:]{1,24}): (.+)$/.exec(r)
+          return m
+            ? <div key={i}><dt>{m[1][0].toUpperCase() + m[1].slice(1)}</dt><dd>{m[2]}</dd></div>
+            : <div key={i}><dd className="wide">{r}</dd></div>
+        })}
+      </dl>
+    </div>
+  )
+}
+
+// Panel pantauan: angka ringkas, tim, dan log kejadian. Token, sisa jatah, dan jumlah sesi hanya untuk pemilik komputer.
 function Watch({ tasks, agents, agentsStatic, events, control }) {
   const [stats, setStats] = useState(null) // jumlah task selesai per agent; null = memuat
   const [failed, setFailed] = useState(false)
-  const [cost, setCost] = useState(null) // { today, total, runs }
+  const [cost, setCost] = useState(null) // { tokens_today, tokens_machine, runs, limits }
+  const [refreshing, setRefreshing] = useState(false)
   const { on, call } = control
+  const refresh = () => {
+    setRefreshing(true)
+    call('POST', '/api/usage/refresh').then((r) => (r.ok ? r.json() : null)).then((d) => d && setCost(d)).catch(() => {}).finally(() => setRefreshing(false))
+  }
   useEffect(() => {
     if (!on) return
     const load = () => call('GET', '/api/costs').then((r) => (r.ok ? r.json() : null)).then(setCost).catch(() => {})
@@ -31,7 +61,6 @@ function Watch({ tasks, agents, agentsStatic, events, control }) {
   const done = tasks.filter((t) => t.status === 'done').length
   const busy = tasks.filter((t) => t.status === 'in_progress').length
   const running = on ? (control.sessions ?? []).filter((s) => s.state === 'running' || s.state === 'stopping').length : null
-  const guests = agents.filter((a) => a.live).length
   const team = agentsStatic.map((s) => {
     const run = agents.find((a) => a.id === s.id)
     const task = tasks.find((t) => t.agent_id === s.id && t.status === 'in_progress')
@@ -41,14 +70,35 @@ function Watch({ tasks, agents, agentsStatic, events, control }) {
 
   return (
     <>
-      <section className="sec" aria-label="Ringkasan">
+      <Sec id="ringkasan" label="Ringkasan" title="Ringkasan">
         <div className="tiles">
-          <div className="tile"><b>{done}</b><span>task selesai</span></div>
-          <div className="tile"><b>{busy}</b><span>sedang dikerjakan</span></div>
-          {running !== null && <div className="tile"><b>{running}</b><span>sesi Claude jalan</span></div>}
-          {cost && <div className="tile"><b>{usd(cost.today)}</b><span>biaya Claude hari ini</span></div>}
+          <div className="tile"><b>{done}</b><span>selesai</span></div>
+          <div className="tile"><b>{busy}</b><span>dikerjakan</span></div>
+          {running !== null && <div className="tile"><b>{running}</b><span>sesi Claude</span></div>}
         </div>
-      </section>
+      </Sec>
+      {on && cost && (
+        <Sec id="usage" label="Usage Claude" title="Usage Claude" count={cost.limits?.fiveHour ? `${Math.round(cost.limits.fiveHour.used * 100)}%` : null}>
+          {WINDOWS.map(([k, label]) => {
+            // server membuang jendela yang waktu resetnya sudah lewat
+            const w = cost.limits?.[k]
+            return w && (
+              <div key={k} className="ugauge">
+                <div className="urow"><span>{label}<small>reset {resetAt(w.resetsAt)}</small></span><b>{Math.round(w.used * 100)}% terpakai</b></div>
+                <div className="bar"><i style={{ transform: `scaleX(${w.used})` }} /></div>
+              </div>
+            )
+          })}
+          {!cost.limits?.fiveHour && !cost.limits?.sevenDay && <p className="empty">Jatah belum terbaca. Tekan Perbarui bila tidak muncul sendiri.</p>}
+          <div className="urow"><span>Token aplikasi ini hari ini</span><b>{tok(cost.tokens_today)}</b></div>
+          <div className="urow"><span>Token Claude Code di komputer ini hari ini</span><b>{cost.tokens_machine == null ? 'menghitung' : tok(cost.tokens_machine)}</b></div>
+          <p className="note">
+            Persen jatah berlaku untuk seluruh akunmu, termasuk claude.ai. Token hanya dari Claude Code (bukan claude.ai), tanpa bacaan cache.
+            {cost.limits?.at ? ` Jatah dibaca ${clock(cost.limits.at)}.` : ''}
+          </p>
+          <button type="button" className="btn sm ubtn" disabled={refreshing} onClick={refresh}>{refreshing ? 'Membaca jatah' : 'Perbarui jatah'}</button>
+        </Sec>
+      )}
       <Sec id="aktivitas" label="Aktivitas" title="Aktivitas" count={events.length} defaultOpen={false}>
         {events.length === 0 && <p className="empty">Belum ada kejadian. Tambah task di panel kiri.</p>}
         <ul className="alist">
@@ -65,7 +115,6 @@ function Watch({ tasks, agents, agentsStatic, events, control }) {
       </Sec>
       <Sec id="tim" label="Tim" title="Tim" count={`${working}/${team.length} kerja`}>
         {failed && <p className="empty">Jumlah task selesai tidak termuat.</p>}
-        {guests > 0 && <p className="note">{guests} tamu Claude Code di ruang meeting.</p>}
         {team.map((x) => (
           <div key={x.id} className="trow" style={{ '--tag': x.look.tag }}>
             <i aria-hidden="true" />
@@ -188,7 +237,7 @@ export function Board({ tasks, agents, agentsStatic, events, onDelete, control, 
             <div className="bar"><i style={{ transform: `scaleX(${Math.min(1, t.progress / t.est)})` }} /></div>
           )}
           {t.agent_id && <div className="who">{lookFor(t.agent_id).label}</div>}
-          {claude && <div className="who">{CLAUDE}{mine && t.project_id ? `, ${projectName(t.project_id)}` : ''}{mine && t.cost > 0 ? `, ${usd(t.cost)}` : ''}</div>}
+          {claude && <div className="who">{CLAUDE}{mine && t.project_id ? `, ${projectName(t.project_id)}` : ''}{mine && t.tokens > 0 ? `, ${tok(t.tokens)} token` : ''}</div>}
           {claude && t.status === 'in_progress' && (
             <div className="tlive">
               {mine && t.checks === 'jalan'
@@ -284,6 +333,7 @@ export function Board({ tasks, agents, agentsStatic, events, onDelete, control, 
             {section('todo', 'Antrian kosong. Tambah task di bawah.')}
             {section('done', 'Belum ada task selesai.')}
             <Sec id="form" label="Task baru" title="Task baru" keep>{form}</Sec>
+            <Sessions control={control} />
           </aside>
           <aside className="side right" aria-label="Pantauan">
             <Sec id="review" className="review" label="Review" title={owner ? 'Butuh keputusanmu' : 'Review'} count={review.length}>
@@ -300,11 +350,11 @@ export function Board({ tasks, agents, agentsStatic, events, onDelete, control, 
           <div className="dialog panel" role="dialog" aria-modal="true" aria-label={open.title} onClick={(e) => e.stopPropagation()}>
             <h2>{open.title}</h2>
             <div className="meta">
-              {open.epic ? 'Pekerjaan besar' : open.mode === 'claude' ? CLAUDE : lookFor(open.agent_id).label}, {open.finished_at
-                ? `selesai ${new Date(open.finished_at).toLocaleTimeString()}`
-                : open.status === 'review' ? 'menunggu keputusan' : 'belum tercatat'}{open.branch ? `, cabang ${open.branch}` : ''}
+              {open.epic ? 'Pekerjaan besar' : open.mode === 'claude' ? CLAUDE : lookFor(open.agent_id).label} {open.finished_at
+                ? `selesai pukul ${clock(open.finished_at)}`
+                : open.status === 'review' ? 'menunggu keputusan' : 'belum tercatat'}{open.branch ? ` di cabang ${open.branch}` : ''}
             </div>
-            <pre>{(open.mode === 'claude' && open.detail) || open.output || '(tidak ada output)'}</pre>
+            <Result text={(open.mode === 'claude' && open.detail) || open.output || '(tidak ada output)'} plain={open.mode === 'claude' || open.epic} />
             {diff && (
               <section aria-label="Perubahan">
                 <h3>Perubahan{diff.branch ? ` di ${diff.branch}` : ''}</h3>
