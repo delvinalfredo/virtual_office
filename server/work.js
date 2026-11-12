@@ -203,7 +203,7 @@ export function createWork({ app, control, sessions, projects, kitDir, workRoot,
 
     // Sesi yang mengubah pengaturan Claude (subagent, hook, MCP, CLAUDE.md) tidak dilanjutkan dan tidak digabung
     // otomatis: sesi berikutnya akan memuat berkas itu, jadi pemilik yang memutuskan dulu.
-    const d = await diffOf({ worktree: t.worktree, base: t.base })
+    const d = await diffOf({ worktree: t.worktree, base: t.base, projectDir: project.path, branch: t.branch })
     const guarded = (d.files ?? []).map((f) => f.path).filter((f) => GUARDED.test(f))
     if (guarded.length) return toReview(t, 'Mengubah berkas pengaturan Claude, perlu kamu periksa dulu', `Berkas: ${guarded.join(', ')}\n\n${detail ?? ''}`.trim(), true)
 
@@ -405,7 +405,7 @@ export function createWork({ app, control, sessions, projects, kitDir, workRoot,
   app.get('/api/epics/:id/diff', control(true), async (req, res) => {
     const e = epicOr404(req, res)
     if (!e) return
-    const d = await diffOf({ worktree: e.worktree, base: e.base })
+    const d = await diffOf({ worktree: e.worktree, base: e.base, projectDir: projectOf(e)?.path, branch: e.branch })
     if (d.error) return res.status(400).json(d)
     res.json({ branch: e.branch, ...d })
   })
@@ -563,7 +563,7 @@ export function createWork({ app, control, sessions, projects, kitDir, workRoot,
   app.get('/api/tasks/:id/diff', control(true), async (req, res) => {
     const t = getTask(Number(req.params.id))
     if (!t || t.mode !== 'claude' || !t.worktree) return res.status(404).json({ error: 'task ini tidak punya cabang kerja' })
-    const d = await diffOf({ worktree: t.worktree, base: t.base })
+    const d = await diffOf({ worktree: t.worktree, base: t.base, projectDir: projectOf(t)?.path, branch: t.branch })
     if (d.error) return res.status(400).json(d)
     res.json({ branch: t.branch, ...d })
   })

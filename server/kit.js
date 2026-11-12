@@ -10,11 +10,11 @@ import crypto from 'node:crypto'
 const NAME_OK = /^[a-z0-9-]{1,40}$/
 const WRITE_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
 const MODELS = new Set(['haiku', 'sonnet', 'opus', 'fable', 'inherit'])
-// Model bawaan per peran: yang mahal hanya untuk merancang dan mereview, yang murah untuk merapikan dokumen.
+// Model bawaan per peran: yang mahal hanya untuk merancang dan review keamanan, yang murah untuk merapikan dokumen.
 // Baris `model:` di berkas agent menang atas tabel ini; peran di luar tabel ikut model sesi.
 export const ROLE_MODEL = {
-  architect: 'opus', planner: 'opus', 'code-reviewer': 'opus', 'security-reviewer': 'opus',
-  'tdd-guide': 'sonnet', 'build-error-resolver': 'sonnet', 'refactor-cleaner': 'sonnet', 'e2e-runner': 'sonnet',
+  architect: 'opus', planner: 'opus', 'security-reviewer': 'opus',
+  'code-reviewer': 'sonnet', 'tdd-guide': 'sonnet', 'build-error-resolver': 'sonnet', 'refactor-cleaner': 'sonnet', 'e2e-runner': 'sonnet',
   'context-sync': 'haiku',
 }
 

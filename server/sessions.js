@@ -16,6 +16,10 @@ import { describeTool, clean } from './live.js'
 export const MAX_PROMPT = 4000
 const MAX_KEPT = 30
 const clip = (s, n) => (typeof s === 'string' ? s.slice(0, n) : '')
+// Jawaban akhir sesi yang ditampilkan di dialog hasil task; bila lebih panjang, ujungnya diberi tanda supaya tidak
+// tampak berhenti di tengah kata begitu saja.
+const MAX_RESULT = 8000
+const clipResult = (s) => (s.length > MAX_RESULT ? `${s.slice(0, MAX_RESULT).trimEnd()}\n\n[teks dipotong]` : s)
 const FINISHED = new Set(['done', 'error', 'stopped'])
 
 export function createSessions({ projects, bin = 'claude', maxRunning = 3, timeoutMs = 30 * 60 * 1000, hooks = {} }) {
@@ -76,7 +80,7 @@ export function createSessions({ projects, bin = 'claude', maxRunning = 3, timeo
       const text = typeof m.result === 'string' ? m.result : Array.isArray(m.errors) ? m.errors.join('; ') : ''
       s.result = {
         ok,
-        text: clip(text, 1000),
+        text: clipResult(text),
         turns: Number.isFinite(m.num_turns) ? m.num_turns : null,
         seconds: Number.isFinite(m.duration_ms) ? Math.round(m.duration_ms / 100) / 10 : null,
         denials: Array.isArray(m.permission_denials) ? m.permission_denials.length : 0,

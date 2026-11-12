@@ -123,16 +123,33 @@ export async function snapshot({ worktree, title, taskId }) {
 }
 
 // Perubahan cabang task terhadap titik awalnya: daftar berkas dan patch (dipotong bila terlalu besar).
-export async function diffOf({ worktree, base }) {
-  if (!worktree || !base || !fs.existsSync(worktree)) return { error: 'cabang kerja sudah tidak ada' }
+// Folder kerja yang sisa (tautan .git-nya sudah lepas) membuat git naik ke repo induk dan salah mencari objek,
+// jadi folder itu hanya dipakai bila akar repo-nya memang folder itu sendiri.
+async function isWorktree(dir) {
+  const r = await git(dir, ['rev-parse', '--show-toplevel'])
+  return r.ok && same(path.resolve(r.out.trim()), path.resolve(dir))
+}
+
+// Bila foldernya sudah tidak sah tapi cabangnya masih ada di proyek (projectDir + branch), perubahan dibaca dari cabang itu.
+export async function diffOf({ worktree, base, projectDir, branch }) {
+  if (!base) return { error: 'cabang kerja sudah tidak ada' }
+  let cwd = null
+  let head = 'HEAD'
+  if (worktree && fs.existsSync(worktree) && await isWorktree(worktree)) cwd = worktree
+  else if (projectDir && branch) {
+    const info = await repoInfo(projectDir)
+    const ref = `refs/heads/${branch}`
+    if (info && (await git(info.top, ['rev-parse', '--verify', '-q', ref])).ok) { cwd = info.top; head = ref }
+  }
+  if (!cwd) return { error: 'cabang kerja sudah tidak ada' }
   const flags = ['-c', 'core.quotepath=off', 'diff', '--no-color', '--no-ext-diff', '--no-textconv']
-  const stat = await git(worktree, [...flags, '--numstat', base, 'HEAD'])
+  const stat = await git(cwd, [...flags, '--numstat', base, head])
   if (!stat.ok) return { error: firstLine(stat.err) }
   const files = stat.out.split('\n').filter(Boolean).map((l) => {
     const [a, r, ...p] = l.split('\t')
     return { path: p.join('\t'), added: a === '-' ? null : Number(a), removed: r === '-' ? null : Number(r) }
   })
-  const patch = await git(worktree, [...flags, base, 'HEAD'])
+  const patch = await git(cwd, [...flags, base, head])
   const text = patch.out ?? ''
   return { files, patch: text.slice(0, MAX_PATCH), truncated: text.length > MAX_PATCH }
 }

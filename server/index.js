@@ -347,7 +347,7 @@ const briefed = new Set() // id task yang sudah dibahas di rapat, supaya antrean
 
 function startMeeting() {
   const crew = [...agents.values()]
-    .filter((a) => !a.busy && a.task == null && (a.state === 'idle' || a.idleWalk))
+    .filter((a) => !a.busy && !a.meet && a.task == null && (a.state === 'idle' || a.idleWalk))
     .sort((a, b) => (b.role === 'lead') - (a.role === 'lead')) // lead duluan, supaya kebagian kursinya
   if (!crew.some((a) => a.role !== 'lead' && a.state === 'idle')) return false // tak ada yang bisa mengerjakan
   const here = []
@@ -383,6 +383,40 @@ function runMeeting(todo) {
   meeting = null
   dirty = true
   return false
+}
+
+// ---- rapat perencanaan: selama Tech Lead menyusun rencana pekerjaan besar, anggota senggang berkumpul di ruang meeting ----
+// Tech Lead sendiri diwakili sesi perencana (borrow), lalu dipindah ke kursi lead di ruang meeting. Rapat selesai saat sesinya berhenti.
+const planMeet = new Map() // kunci sesi perencana → { ids: [id anggota yang ikut], at }
+const PLAN_MEET_MAX = 20 * 60 * 1000 // sesi mati tanpa onStop: anggota dibebaskan sendiri
+
+function startPlanMeeting(key) {
+  const lead = agents.get(standIn.get(`live-${key}`))
+  if (lead) goTo(lead, MEET_LEAD)
+  const ids = []
+  const crew = [...agents.values()].filter((a) => !a.busy && !a.meet && a.task == null && a.role !== 'lead' && (a.state === 'idle' || a.idleWalk))
+  for (const a of crew) {
+    const spot = freeSpot(MEETING)
+    if (!spot) break
+    Object.assign(a, { meet: true, state: 'walking', idleWalk: true, bubble: null, restT: 0 })
+    goTo(a, spot)
+    ids.push(a.id)
+  }
+  if (!ids.length) return
+  planMeet.set(key, { ids, at: Date.now() })
+  logEvent(lead?.id ?? null, 'rapat menyusun rencana')
+  dirty = true
+}
+
+function endPlanMeeting(key) {
+  const m = planMeet.get(key)
+  if (!m) return
+  planMeet.delete(key)
+  for (const id of m.ids) {
+    const a = agents.get(id)
+    if (a?.meet) Object.assign(a, { meet: false, bubble: 'Oke, kita jalan', restT: 3 })
+  }
+  dirty = true
 }
 
 // ---- dispatch: berikan task todo ke agent idle ----
@@ -478,6 +512,7 @@ setInterval(() => {
   let posChanged = dirty
   dirty = false
 
+  for (const [key, m] of planMeet) if (Date.now() - m.at > PLAN_MEET_MAX) endPlanMeeting(key)
   for (const a of agents.values()) {
     // wakil sesi yang kabar terakhirnya sudah terlalu lama (sesi mati tanpa SubagentStop): dibebaskan
     if (a.busy && Date.now() - a.lastEvent > STALE_MS) liveStop(a.busy)
@@ -701,9 +736,13 @@ const sessions = createSessions({
   projects,
   bin: process.env.KANTOR_CLAUDE_BIN ?? 'claude',
   hooks: {
-    onStart: (s) => { liveStart(liveKey(s), s.projectName, s.run?.staff ?? 'programmer') },
+    onStart: (s) => {
+      liveStart(liveKey(s), s.projectName, s.run?.staff ?? 'programmer')
+      if (s.run?.staff === 'lead') startPlanMeeting(liveKey(s)) // sesi perencana pekerjaan besar
+    },
     onTool: (s, text) => liveTool(liveKey(s), s.projectName, text),
     onStop: (s) => {
+      endPlanMeeting(liveKey(s))
       liveStop(`live-${liveKey(s)}`, { done: DONE, stopped: 'Dihentikan', error: 'Gagal' }[s.state])
       work.sessionEnded(s)
     },

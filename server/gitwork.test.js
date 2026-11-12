@@ -151,6 +151,19 @@ test('menyiapkan ulang task yang sama membuang sisa cabang lama', T, async () =>
   assert.equal(branchOf(12), again.branch)
 })
 
+test('folder kerja sisa tanpa tautan .git: diff dibaca dari cabangnya di proyek, bukan dari repo induk', T, async () => {
+  const r = repo()
+  const w = await prepare({ projectDir: r.proj, taskId: 14, projectId: 'p', root: r.root })
+  fs.writeFileSync(path.join(w.cwd, 'baru.txt'), 'x\n')
+  await snapshot({ worktree: w.worktree, title: 'baru', taskId: 14 })
+  fs.rmSync(path.join(w.worktree, '.git'), { force: true }) // yang tersisa setelah worktree dilepas tapi foldernya tertahan
+  const tanpa = await diffOf({ worktree: w.worktree, base: w.base })
+  assert.match(tanpa.error, /sudah tidak ada/)
+  const d = await diffOf({ worktree: w.worktree, base: w.base, projectDir: r.proj, branch: w.branch })
+  assert.deepEqual(d.files.map((f) => f.path), ['baru.txt'])
+  assert.match(d.patch, /\+x/)
+})
+
 test('diff yang sangat besar dipotong dan ditandai', T, async () => {
   const r = repo()
   const w = await prepare({ projectDir: r.proj, taskId: 13, projectId: 'p', root: r.root })
